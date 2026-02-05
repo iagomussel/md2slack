@@ -19,6 +19,7 @@ Tools available (Return a JSON ARRAY of tool calls):
 
 Rules:
 - Output ONLY the JSON ARRAY of tool calls.
+- NEVER leave "intent" or "scope" as empty strings or placeholders. Use the data from "New Commit".
 - The "index" must refer to one of the tasks in "Current Tasks".
 - If you use "create_task", the next tool call can refer to the NEW task using its expected index (last index + 1).
 - Be factual and concise.
