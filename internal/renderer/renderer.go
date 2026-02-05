@@ -76,14 +76,15 @@ func renderTask(t gitdiff.TaskChange) string {
 		}
 		details = append(details, fmt.Sprintf("  - %s", line))
 	}
-	if len(details) == 0 {
-		details = append(details, "  - (no details provided)")
+	var detailsStr string
+	if len(details) > 0 {
+		detailsStr = strings.Join(details, "\n") + "\n"
 	}
 
-	return fmt.Sprintf("- %s — **%dh Done** :check:\n%s\n  - commits: `%s`",
+	return fmt.Sprintf("- %s — **%dh Done** :check:\n%s  - commits: `%s`",
 		intent,
 		hours,
-		strings.Join(details, "\n"),
+		detailsStr,
 		strings.Join(t.Commits, "`, `"),
 	)
 }

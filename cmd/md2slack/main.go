@@ -97,7 +97,7 @@ func main() {
 
 	baseUrl := cfg.LLM.BaseURL
 	if baseUrl == "" {
-		baseUrl = "http://127.0.0.1:11434/api/generate"
+		baseUrl = "http://127.0.0.1:11434"
 	}
 
 	llmOpts := llm.LLMOptions{
@@ -125,7 +125,10 @@ func main() {
 			hist, _ := storage.LoadHistory(repoName, prevDate)
 			if hist != nil {
 				fmt.Printf("Loaded history from %s/%s (%d tasks)\n", repoName, prevDate, len(hist.Tasks))
-				prevTasks = hist.Tasks
+				for _, t := range hist.Tasks {
+					t.IsHistorical = true
+					prevTasks = append(prevTasks, t)
+				}
 			}
 		}
 
@@ -160,41 +163,48 @@ func main() {
 				fmt.Printf("Warning: failed to extract intent for %s: %v\n", change.CommitHash, err)
 				continue
 			}
+			cc.CommitHash = change.CommitHash // Preserve factual hash
 			commitChanges = append(commitChanges, *cc)
 		}
 
 		fmt.Printf("Stage 2: Synthesizing tasks from %d analyzed commits (incremental)...\n", len(commitChanges))
-		var tasks []gitdiff.TaskChange
-		tasks = append(tasks, prevTasks...) // Start with previous tasks for continuity
+		var currentTasks []gitdiff.TaskChange
+		currentTasks = append(currentTasks, prevTasks...) // Start with previous tasks for continuity
 
 		for i, cc := range commitChanges {
 			fmt.Printf("  [%d/%d] Incorporating commit %s...\n", i+1, len(commitChanges), cc.CommitHash)
-			updatedTasks, err := llm.IncorporateCommit(cc, tasks, output.Extra, llmOpts)
+			updatedTasks, err := llm.IncorporateCommit(cc, currentTasks, output.Extra, llmOpts)
 			if err != nil {
 				fmt.Printf("Warning: failed to incorporate commit %s: %v\n", cc.CommitHash, err)
 				continue
 			}
-			tasks = updatedTasks
+			currentTasks = updatedTasks
 		}
 
-		if len(tasks) == 0 {
+		if len(currentTasks) == 0 {
 			fmt.Fprintf(os.Stderr, "Error: no tasks synthesized for %s\n", date)
 			continue
 		}
 
-		fmt.Printf("Stage 3: Grouping %d synthesized tasks into Epics...\n", len(tasks))
-		groups, err := llm.GroupTasks(tasks, llmOpts)
+		fmt.Printf("\nStage 2.5: Refining and Deduplicating tasks...\n")
+		currentTasks = llm.PruneTasks(currentTasks)
+		currentTasks, _ = llm.RefineTasks(currentTasks, llmOpts)
+
+		fmt.Printf("Stage 3: Grouping %d synthesized tasks into Epics...\n", len(currentTasks))
+		groups, err := llm.GroupTasks(currentTasks, llmOpts)
 		if err != nil {
 			fmt.Printf("Warning: failed to group tasks for %s: %v\n", date, err)
 		}
 
 		// Save History for the NEXT run
-		if err := storage.SaveHistory(repoName, date, tasks, groups); err != nil {
+		if err := storage.SaveHistory(repoName, date, currentTasks, groups); err != nil {
 			fmt.Printf("Warning: failed to save history for %s: %v\n", date, err)
 		}
 
 		fmt.Println("Stage 4: Rendering report and preparing Slack blocks...")
-		report := renderer.RenderReport(date, groups, tasks)
+		report := renderer.RenderReport(date, groups, currentTasks)
+		fmt.Println("\n--- FINAL REPORT ---")
+		fmt.Println(report)
 
 		if debug {
 			fmt.Println("--- LLM Report ---")

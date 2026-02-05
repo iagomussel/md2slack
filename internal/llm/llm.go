@@ -40,18 +40,17 @@ type OpenAIResponse struct {
 	} `json:"choices"`
 }
 
-type OllamaRequest struct {
-	Model   string                 `json:"model"`
-	Prompt  string                 `json:"prompt"`
-	System  string                 `json:"system"`
-	Format  string                 `json:"format,omitempty"`
-	Stream  bool                   `json:"stream"`
-	Options map[string]interface{} `json:"options"`
+type OllamaChatRequest struct {
+	Model    string                 `json:"model"`
+	Messages []OpenAIMessage        `json:"messages"`
+	Format   string                 `json:"format,omitempty"`
+	Stream   bool                   `json:"stream"`
+	Options  map[string]interface{} `json:"options"`
 }
 
-type OllamaResponse struct {
-	Response string `json:"response"`
-	Done     bool   `json:"done"`
+type OllamaChatResponse struct {
+	Message OpenAIMessage `json:"message"`
+	Done    bool          `json:"done"`
 }
 
 type ToolCall struct {
@@ -87,7 +86,8 @@ func ExtractCommitIntent(change gitdiff.SemanticChange, commitMsg string, option
 	prompt := fmt.Sprintf("Commit: %s\nMessage: %s\nSignals: %v", change.CommitHash, commitMsg, change.Signals)
 
 	var out gitdiff.CommitChange
-	err := callJSON(prompt, system, options, &out)
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+	err := callJSON(messages, system, options, &out)
 	return &out, err
 }
 
@@ -103,7 +103,8 @@ func SynthesizeTasks(commits []gitdiff.CommitChange, previousTasks []gitdiff.Tas
 	prompt := fmt.Sprintf("Extra Context: %s\nPrevious Tasks: %s\nCommits: %s", extraContext, string(prevJSON), string(commitsJSON))
 
 	var out []gitdiff.TaskChange
-	err := callJSON(prompt, system, options, &out)
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+	err := callJSON(messages, system, options, &out)
 	return out, err
 }
 
@@ -129,26 +130,168 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 	}
 
 	commitJSON, _ := json.MarshalIndent(commit, "", "  ")
-
 	prompt := fmt.Sprintf("Extra Context: %s\nCurrent Tasks (State):\n%s\nNew Commit: %s", extraContext, tasksState, string(commitJSON))
 
-	var tools []ToolCall
-	err := callJSON(prompt, system, options, &tools)
-	if err != nil {
-		return nil, err
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+
+	// Iterative Loop: Allow the LLM to call tools and see results
+	for turn := 0; turn < 8; turn++ {
+		var tools []ToolCall
+		err := callJSON(messages, system, options, &tools)
+		if err != nil {
+			return currentTasks, err
+		}
+
+		// Apply tools and update state
+		var log string
+		currentTasks, log = ApplyTools(tools, currentTasks)
+
+		// REAL-TIME VISUALIZATION: Show the state dashboard to the user
+		showStateDashboard(commit.CommitHash, currentTasks, log, turn)
+		PrintMarkdownTasks(currentTasks)
+
+		// VALIDATION: Check if we can stop
+		isLinked := false
+		for _, t := range currentTasks {
+			for _, c := range t.Commits {
+				if c == commit.CommitHash {
+					isLinked = true
+					break
+				}
+			}
+		}
+
+		missingDetails := false
+		for i, t := range currentTasks {
+			if t.TechnicalWhy == "" || strings.Contains(strings.ToLower(t.TechnicalWhy), "no details") {
+				missingDetails = true
+				log += fmt.Sprintf("\nError: Task %d is missing technical details.", i)
+			}
+		}
+
+		// If LLM returned empty tools but validation failed, force a retry Turn
+		if len(tools) == 0 {
+			if !isLinked {
+				log += fmt.Sprintf("\nCRITICAL: Commit %s is NOT linked to any task. You MUST call add_commit_reference.", commit.CommitHash)
+			} else if !missingDetails {
+				// All good, we can stop
+				break
+			}
+		}
+
+		// Prepare feedback for the LLM
+		var feedbackSB strings.Builder
+		feedbackSB.WriteString("Tool Execution Log:\n")
+		feedbackSB.WriteString(log)
+		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
+		for i, t := range currentTasks {
+			feedbackSB.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
+			if t.TechnicalWhy != "" {
+				feedbackSB.WriteString(fmt.Sprintf("    Details: %s\n", t.TechnicalWhy))
+			}
+			feedbackSB.WriteString(fmt.Sprintf("    Commits: %v\n", t.Commits))
+		}
+
+		if !isLinked {
+			feedbackSB.WriteString(fmt.Sprintf("\nWARNING: Current commit %s is NOT yet linked to any task. Use add_commit_reference to fix this.", commit.CommitHash))
+		}
+
+		feedbackSB.WriteString("\nContinue until all rules are met. Return [] ONLY when done and commit is fully integrated.")
+
+		// Update history
+		var toolsStr string
+		if len(tools) > 0 {
+			toolsJSON, _ := json.Marshal(tools)
+			toolsStr = string(toolsJSON)
+		} else {
+			toolsStr = "[]"
+		}
+		messages = append(messages, OpenAIMessage{Role: "assistant", Content: toolsStr})
+		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
 	}
 
-	return ApplyTools(tools, currentTasks), nil
+	return currentTasks, nil
 }
 
-func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange) []gitdiff.TaskChange {
+func showStateDashboard(commitHash string, tasks []gitdiff.TaskChange, lastLog string, turn int) {
+	fmt.Printf("\r  [Turn %d] Incorporating %s | Current Tasks: %d                     \n", turn+1, commitHash, len(tasks))
+	// Print simple log if it contains errors
+	if strings.Contains(strings.ToLower(lastLog), "error") || strings.Contains(strings.ToLower(lastLog), "critical") {
+		fmt.Printf("    > %s\n", lastLog)
+	}
+}
+
+func PrintMarkdownTasks(tasks []gitdiff.TaskChange) {
+	fmt.Println("\n--- DEBUG: Current Task List ---")
+	for i, t := range tasks {
+		fmt.Printf("[%d] **%s** (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType)
+		if t.TechnicalWhy != "" {
+			lines := strings.Split(t.TechnicalWhy, "\n")
+			for _, l := range lines {
+				if strings.TrimSpace(l) != "" {
+					fmt.Printf("    - %s\n", l)
+				}
+			}
+		}
+		if len(t.Commits) > 0 {
+			fmt.Printf("    commits: `%s`\n", strings.Join(t.Commits, "`, `"))
+		}
+	}
+	fmt.Println("--------------------------------\n")
+}
+
+func PruneTasks(tasks []gitdiff.TaskChange) []gitdiff.TaskChange {
+	var out []gitdiff.TaskChange
+	for _, t := range tasks {
+		if t.IsHistorical {
+			out = append(out, t)
+			continue
+		}
+		// Preserve if it has a commit OR is a useful shell
+		hasCommits := len(t.Commits) > 0
+		if (hasCommits || t.TaskIntent != "") && t.TaskIntent != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func RefineTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.TaskChange, error) {
+	system := readPromptFile("task_refiner.txt")
+	if system == "" {
+		return tasks, nil // Fallback
+	}
+
+	tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
+	prompt := fmt.Sprintf("Current Task List:\n%s", string(tasksJSON))
+
+	var out []gitdiff.TaskChange
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+	err := callJSON(messages, system, options, &out)
+	if err != nil {
+		fmt.Printf("Warning: task refinement failed: %v. Using unrefined list.\n", err)
+		return tasks, nil
+	}
+
+	// Double prune after refinement to remove any junk the LLM might have introduced
+	out = PruneTasks(out)
+
+	if len(out) == 0 && len(tasks) > 0 {
+		return tasks, nil // Don't return an empty list if refinement wiped it out
+	}
+	return out, nil
+}
+
+func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string) {
+	var logs []string
 	for _, tc := range tools {
 		params := tc.Parameters
 		switch tc.Tool {
 		case "create_task":
 			intent := castString(params["intent"])
 			if intent == "" {
-				continue // Skip empty tasks
+				logs = append(logs, "Error: attempt to create task with empty intent")
+				continue
 			}
 			newTask := gitdiff.TaskChange{
 				TaskIntent: intent,
@@ -159,68 +302,79 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange) []gitdiff.TaskChan
 				newTask.TaskType = "delivery"
 			}
 			tasks = append(tasks, newTask)
+			logs = append(logs, fmt.Sprintf("Success: created task with index %d", len(tasks)-1))
 
 		case "edit_task":
 			idx, ok := castInt(params["index"])
-			if ok && idx >= 0 && idx < len(tasks) {
-				if intent := castString(params["intent"]); intent != "" {
-					tasks[idx].TaskIntent = intent
-				}
-				if scope := castString(params["scope"]); scope != "" {
-					tasks[idx].Scope = scope
-				}
+			if !ok || idx < 0 || idx >= len(tasks) {
+				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
+				continue
 			}
+			if intent := castString(params["intent"]); intent != "" {
+				tasks[idx].TaskIntent = intent
+			}
+			if scope := castString(params["scope"]); scope != "" {
+				tasks[idx].Scope = scope
+			}
+			logs = append(logs, fmt.Sprintf("Success: edited task %d", idx))
 
 		case "add_details":
 			idx, ok := castInt(params["index"])
-			if ok && idx >= 0 && idx < len(tasks) {
-				detail := castString(params["technical_why"])
-				if detail != "" && !strings.Contains(detail, "...") {
-					if tasks[idx].TechnicalWhy == "" {
-						tasks[idx].TechnicalWhy = detail
-					} else {
-						// Avoid duplicate details
-						if !strings.Contains(tasks[idx].TechnicalWhy, detail) {
-							tasks[idx].TechnicalWhy += "\n" + detail
-						}
+			if !ok || idx < 0 || idx >= len(tasks) {
+				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
+				continue
+			}
+			detail := castString(params["technical_why"])
+			if detail != "" && !strings.Contains(detail, "...") {
+				if tasks[idx].TechnicalWhy == "" {
+					tasks[idx].TechnicalWhy = detail
+				} else {
+					if !strings.Contains(tasks[idx].TechnicalWhy, detail) {
+						tasks[idx].TechnicalWhy += "\n" + detail
 					}
 				}
+				logs = append(logs, fmt.Sprintf("Success: added detail to task %d", idx))
 			}
 
 		case "add_time":
 			idx, ok := castInt(params["index"])
-			if ok && idx >= 0 && idx < len(tasks) {
-				if h, ok := castInt(params["hours"]); ok {
-					if tasks[idx].EstimatedHours == nil {
-						tasks[idx].EstimatedHours = &h
-					} else {
-						newH := *tasks[idx].EstimatedHours + h
-						tasks[idx].EstimatedHours = &newH
-					}
+			if !ok || idx < 0 || idx >= len(tasks) {
+				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
+				continue
+			}
+			if h, ok := castInt(params["hours"]); ok {
+				if tasks[idx].EstimatedHours == nil {
+					tasks[idx].EstimatedHours = &h
+				} else {
+					newH := *tasks[idx].EstimatedHours + h
+					tasks[idx].EstimatedHours = &newH
 				}
+				logs = append(logs, fmt.Sprintf("Success: added %d hours to task %d", h, idx))
 			}
 
 		case "add_commit_reference":
 			idx, ok := castInt(params["index"])
-			if ok && idx >= 0 && idx < len(tasks) {
-				hash := castString(params["hash"])
-				if hash != "" {
-					// Avoid duplicate hashes
-					found := false
-					for _, c := range tasks[idx].Commits {
-						if c == hash {
-							found = true
-							break
-						}
-					}
-					if !found {
-						tasks[idx].Commits = append(tasks[idx].Commits, hash)
+			if !ok || idx < 0 || idx >= len(tasks) {
+				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
+				continue
+			}
+			hash := castString(params["hash"])
+			if hash != "" {
+				found := false
+				for _, c := range tasks[idx].Commits {
+					if c == hash {
+						found = true
+						break
 					}
 				}
+				if !found {
+					tasks[idx].Commits = append(tasks[idx].Commits, hash)
+				}
+				logs = append(logs, fmt.Sprintf("Success: added commit %s to task %d", hash, idx))
 			}
 		}
 	}
-	return tasks
+	return tasks, strings.Join(logs, "\n")
 }
 
 // Helpers for casting (aliased from gitdiff to avoid circular dependency if needed,
@@ -259,13 +413,18 @@ func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.Group
 	prompt := fmt.Sprintf("Tasks: %s", string(tasksJSON))
 
 	var out []gitdiff.GroupedTask
-	err := callJSON(prompt, system, options, &out)
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+	err := callJSON(messages, system, options, &out)
 	return out, err
 }
 
-func callJSON(prompt, system string, options LLMOptions, target interface{}) error {
+func callJSON(messages []OpenAIMessage, system string, options LLMOptions, target interface{}) error {
 	var body []byte
 	var url string
+
+	// Ensure system prompt is at the beginning
+	fullMessages := []OpenAIMessage{{Role: "system", Content: system}}
+	fullMessages = append(fullMessages, messages...)
 
 	switch strings.ToLower(options.Provider) {
 	case "codex", "openai":
@@ -274,30 +433,30 @@ func callJSON(prompt, system string, options LLMOptions, target interface{}) err
 			url = "https://api.openai.com/v1/chat/completions"
 		}
 		if !strings.HasSuffix(url, "/chat/completions") && !strings.HasSuffix(url, "/completions") {
-			// Try to append if it's just a base URL
 			url = strings.TrimSuffix(url, "/") + "/chat/completions"
 		}
 
 		req := OpenAIRequest{
-			Model: options.ModelName,
-			Messages: []OpenAIMessage{
-				{Role: "system", Content: system},
-				{Role: "user", Content: prompt},
-			},
+			Model:    options.ModelName,
+			Messages: fullMessages,
 		}
 		body, _ = json.Marshal(req)
 
 	default: // ollama
 		url = options.BaseUrl
 		if url == "" {
-			url = "http://localhost:11434/api/generate"
+			url = "http://localhost:11434"
 		}
-		req := OllamaRequest{
-			Model:  options.ModelName,
-			Prompt: prompt,
-			System: system,
-			Format: "json",
-			Stream: false,
+		url = strings.TrimSuffix(url, "/")
+		url = strings.TrimSuffix(url, "/api/generate")
+		url = strings.TrimSuffix(url, "/api/chat")
+		url = url + "/api/chat"
+
+		req := OllamaChatRequest{
+			Model:    options.ModelName,
+			Messages: fullMessages,
+			Format:   "json",
+			Stream:   false,
 			Options: map[string]interface{}{
 				"temperature":    0.1,
 				"top_p":          options.TopP,
@@ -328,11 +487,11 @@ func callJSON(prompt, system string, options LLMOptions, target interface{}) err
 			responseText = oai.Choices[0].Message.Content
 		}
 	} else {
-		var ollama OllamaResponse
+		var ollama OllamaChatResponse
 		if err := json.NewDecoder(resp.Body).Decode(&ollama); err != nil {
 			return err
 		}
-		responseText = ollama.Response
+		responseText = ollama.Message.Content
 	}
 
 	if options.Debug {
@@ -344,9 +503,32 @@ func callJSON(prompt, system string, options LLMOptions, target interface{}) err
 	clean = extractJSONPayload(clean)
 	raw := []byte(strings.TrimSpace(clean))
 
-	// Robust unmarshal: if target is a slice but response is an object, wrap it
+	// Robust unmarshal: if target is a slice but response is an empty object {},
+	// treat it as an empty array.
+	if clean == "{}" || clean == "{ }" {
+		// Check if target is a pointer to a slice
+		if strings.HasPrefix(fmt.Sprintf("%T", target), "*[]") {
+			return nil
+		}
+	}
+
 	err = json.Unmarshal(raw, target)
 	if err != nil {
+		// Try to see if it's an object containing an array (wrapper key case)
+		if strings.HasPrefix(fmt.Sprintf("%T", target), "*[]") {
+			var m map[string]interface{}
+			if err2 := json.Unmarshal(raw, &m); err2 == nil {
+				for _, v := range m {
+					if b, err3 := json.Marshal(v); err3 == nil {
+						if err4 := json.Unmarshal(b, target); err4 == nil {
+							// If we got some items, return success
+							return nil
+						}
+					}
+				}
+			}
+		}
+
 		// Try to see if it's a single object that should have been an array
 		if strings.HasPrefix(string(raw), "{") {
 			wrapped := append([]byte("["), raw...)
