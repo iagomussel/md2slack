@@ -10,10 +10,12 @@ import (
 	"md2slack/internal/renderer"
 	"md2slack/internal/slack"
 	"md2slack/internal/storage"
+	"md2slack/internal/tui"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -108,6 +110,8 @@ func main() {
 		ContextSize:   cfg.LLM.ContextSize,
 		BaseUrl:       baseUrl,
 		Debug:         debug,
+		Timeout:       2 * time.Minute,
+		Heartbeat:     5 * time.Second,
 	}
 
 	repoName := gitdiff.GetRepoName()
@@ -115,6 +119,50 @@ func main() {
 	for _, date := range dates {
 		date = strings.TrimSpace(date)
 		fmt.Printf("\n--- Processing Date: %s (Repo: %s) ---\n", date, repoName)
+		runStart := time.Now()
+		var ui *tui.UI
+		if !debug {
+			ui = tui.Start([]string{
+				"Preparing commit context",
+				"Summarizing commits",
+				"Generating tasks",
+				"Reviewing tasks",
+				"Suggesting next actions",
+				"Rendering report",
+			})
+			defer func() {
+				if ui != nil {
+					ui.Stop()
+				}
+			}()
+		}
+		llmOpts.Quiet = ui != nil
+		if ui != nil {
+			llmOpts.OnToolLog = ui.Log
+			llmOpts.OnToolStatus = ui.Status
+			llmOpts.OnLLMLog = ui.Log
+		} else {
+			llmOpts.OnToolLog = nil
+			llmOpts.OnToolStatus = nil
+			llmOpts.OnLLMLog = nil
+		}
+
+		logf := func(format string, args ...interface{}) {
+			msg := fmt.Sprintf(format, args...)
+			if ui != nil {
+				ui.Log(msg)
+				return
+			}
+			fmt.Println(msg)
+		}
+		errf := func(format string, args ...interface{}) {
+			msg := fmt.Sprintf(format, args...)
+			if ui != nil {
+				ui.Error(msg)
+				return
+			}
+			fmt.Println(msg)
+		}
 
 		output, err := gitdiff.GenerateFacts(date, extra)
 		if err != nil {
@@ -128,73 +176,99 @@ func main() {
 			fmt.Println(string(b))
 		}
 
-		fmt.Printf("Stage 1: Extracting commit intents for %d changes...\n", len(output.Changes))
-		var commitChanges []gitdiff.CommitChange
-		commitMap := make(map[string]gitdiff.Commit)
-		for _, c := range output.Commits {
-			commitMap[c.Hash] = c
+		stageStart := time.Now()
+		if ui != nil {
+			ui.StageStart(0, "")
 		}
-
-		for i, change := range output.Changes {
-			fmt.Printf("  [%d/%d] Analyzing %s...\n", i+1, len(output.Changes), change.CommitHash)
-			commit, ok := commitMap[change.CommitHash]
-			msg := ""
-			if ok {
-				msg = commit.Message
-			}
-			cc, err := llm.ExtractCommitIntent(change, msg, llmOpts)
-			if err != nil {
-				fmt.Printf("Warning: failed to extract intent for %s: %v\n", change.CommitHash, err)
-				continue
-			}
-			cc.CommitHash = change.CommitHash // Preserve factual hash
-			commitChanges = append(commitChanges, *cc)
-		}
-
-		fmt.Printf("Stage 2: Synthesizing tasks (incremental)...\n")
-		manualTasks, _ := llm.IncorporateExtraContext(output.Extra, llmOpts)
-		var commitTasks []gitdiff.TaskChange
-
-		if len(commitChanges) > 0 {
-			fmt.Printf("Incorporating %d analyzed commits...\n", len(commitChanges))
-		}
-
 		allowedCommits := make(map[string]struct{})
 		for _, c := range output.Commits {
 			allowedCommits[c.Hash] = struct{}{}
 		}
-
-		for i, cc := range commitChanges {
-			fmt.Printf("  [%d/%d] Incorporating commit %s...\n", i+1, len(commitChanges), cc.CommitHash)
-			updatedTasks, err := llm.IncorporateCommit(cc, commitTasks, manualTasks, output.Extra, llmOpts, allowedCommits)
-			if err != nil {
-				fmt.Printf("Warning: failed to incorporate commit %s: %v\n", cc.CommitHash, err)
-				continue
-			}
-			commitTasks = updatedTasks
+		if ui != nil {
+			ui.StageDone(0, fmt.Sprintf("%d commits", len(output.Commits)))
 		}
+		logf("Stage 1 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
-		allTasks := append(manualTasks, commitTasks...)
+		stageStart = time.Now()
+		if ui != nil {
+			ui.StageStart(1, "")
+		}
+		summaries, err := llm.SummarizeCommits(output.Commits, output.Diffs, output.Semantic, llmOpts)
+		if err != nil {
+			errf("Warning: failed to summarize commits: %v", err)
+		}
+		output.Summaries = summaries
+		if ui != nil {
+			ui.StageDone(1, fmt.Sprintf("%d summaries", len(summaries)))
+		}
+		logf("Stage 2 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+
+		stageStart = time.Now()
+		if ui != nil {
+			ui.StageStart(2, "")
+		}
+		allTasks, err := llm.GenerateTasksFromContext(output.Commits, output.Summaries, output.Semantic, output.Extra, llmOpts, allowedCommits)
+		if err != nil {
+			errf("Warning: failed to generate tasks: %v", err)
+		}
+		if ui != nil {
+			ui.StageDone(2, fmt.Sprintf("%d tasks", len(allTasks)))
+		}
+		logf("Stage 3 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+
+		stageStart = time.Now()
+		if ui != nil {
+			ui.StageStart(3, "")
+		}
+		allTasks, err = llm.ReviewTasks(allTasks, output.Commits, output.Summaries, output.Semantic, output.Extra, llmOpts, allowedCommits)
+		if err != nil {
+			errf("Warning: failed to review tasks: %v", err)
+		}
+		if ui != nil {
+			ui.StageDone(3, fmt.Sprintf("%d tasks", len(allTasks)))
+		}
+		logf("Stage 4 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+
+		if len(allTasks) == 0 && len(output.Summaries) > 0 {
+			errf("Warning: no tasks synthesized, falling back to summary-based tasks")
+			allTasks = llm.FallbackTasksFromSummaries(output.Summaries)
+		}
 
 		if len(allTasks) == 0 {
 			fmt.Fprintf(os.Stderr, "Error: no tasks synthesized for %s\n", date)
 			continue
 		}
 
-		fmt.Println("Stage 3: Suggesting Next Actions...")
+		stageStart = time.Now()
+		if ui != nil {
+			ui.StageStart(4, "")
+		}
 		nextActions, err := llm.SuggestNextActions(allTasks, llmOpts)
 		if err != nil {
-			fmt.Printf("Warning: failed to suggest next actions: %v\n", err)
+			errf("Warning: failed to suggest next actions: %v", err)
 		}
+		if ui != nil {
+			ui.StageDone(4, fmt.Sprintf("%d actions", len(nextActions)))
+		}
+		logf("Stage 5 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
-		fmt.Println("Stage 4: Rendering report and preparing Slack blocks...")
+		stageStart = time.Now()
+		if ui != nil {
+			ui.StageStart(5, "")
+		}
 		report := renderer.RenderReport(date, nil, allTasks, nextActions)
+		if ui != nil {
+			ui.StageDone(5, "ready")
+			ui.Stop()
+			ui = nil
+		}
+		logf("Stage 6 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 		fmt.Println("\n--- FINAL REPORT ---")
 		fmt.Println(report)
 
 		// Save History for the NEXT run
-		if err := storage.SaveHistory(repoName, date, allTasks, nil); err != nil {
-			fmt.Printf("Warning: failed to save history for %s: %v\n", date, err)
+		if err := storage.SaveHistory(repoName, date, allTasks, nil, output.Summaries); err != nil {
+			errf("Warning: failed to save history for %s: %v", date, err)
 		}
 		if debug {
 			fmt.Println("--- LLM Report ---")
@@ -215,5 +289,6 @@ func main() {
 			}
 			fmt.Printf("Daily Status Report for %s sent successfully!\n", date)
 		}
+		logf("Total elapsed: %s", time.Since(runStart).Truncate(time.Millisecond))
 	}
 }

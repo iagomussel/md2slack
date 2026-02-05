@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"md2slack/internal/gitdiff"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type LLMOptions struct {
@@ -23,6 +26,12 @@ type LLMOptions struct {
 	ModelName     string
 	BaseUrl       string
 	Debug         bool
+	Quiet         bool
+	OnToolLog     func(string)
+	OnToolStatus  func(string)
+	OnLLMLog      func(string)
+	Timeout       time.Duration
+	Heartbeat     time.Duration
 }
 
 type OpenAIRequest struct {
@@ -92,6 +101,70 @@ func ExtractCommitIntent(change gitdiff.SemanticChange, commitMsg string, option
 	return &out, err
 }
 
+func SummarizeCommit(commit gitdiff.Commit, diff gitdiff.CommitDiff, semantic gitdiff.CommitSemantic, options LLMOptions) (*gitdiff.CommitSummary, error) {
+	system := readPromptFile("commit_summarizer.txt")
+	if system == "" {
+		return nil, errors.New("prompt file commit_summarizer.txt not found")
+	}
+
+	semanticJSON, _ := json.MarshalIndent(semantic, "", "  ")
+	prompt := fmt.Sprintf("Commit: %s\nMessage: %s\nSemantic (JSON): %s\nRaw Diff:\n%s",
+		commit.Hash, commit.Message, string(semanticJSON), diff.Diff)
+
+	var out gitdiff.CommitSummary
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+	err := callJSON(messages, system, options, &out)
+	if err == nil && out.CommitHash == "" {
+		out.CommitHash = commit.Hash
+	}
+	return &out, err
+}
+
+func SummarizeCommits(commits []gitdiff.Commit, diffs []gitdiff.CommitDiff, semantics []gitdiff.CommitSemantic, options LLMOptions) ([]gitdiff.CommitSummary, error) {
+	diffMap := make(map[string]gitdiff.CommitDiff, len(diffs))
+	for _, d := range diffs {
+		diffMap[d.CommitHash] = d
+	}
+	semMap := make(map[string]gitdiff.CommitSemantic, len(semantics))
+	for _, s := range semantics {
+		semMap[s.CommitHash] = s
+	}
+
+	var out []gitdiff.CommitSummary
+	for _, c := range commits {
+		diff := diffMap[c.Hash]
+		sem := semMap[c.Hash]
+		summary, err := SummarizeCommit(c, diff, sem, options)
+		if err != nil {
+			return out, err
+		}
+		summary.CommitHash = c.Hash
+		out = append(out, *summary)
+	}
+	return out, nil
+}
+
+func FallbackTasksFromSummaries(summaries []gitdiff.CommitSummary) []gitdiff.TaskChange {
+	var tasks []gitdiff.TaskChange
+	for _, s := range summaries {
+		intent := strings.TrimSpace(s.Summary)
+		if intent == "" {
+			continue
+		}
+		task := gitdiff.TaskChange{
+			TaskType:   "delivery",
+			TaskIntent: intent,
+			Scope:      s.Area,
+			Commits:    []string{s.CommitHash},
+		}
+		if s.Impact != "" {
+			task.TechnicalWhy = s.Impact
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks
+}
+
 func SynthesizeTasks(commits []gitdiff.CommitChange, previousTasks []gitdiff.TaskChange, extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
 	system := readPromptFile("task_synthesizer.txt")
 	if system == "" {
@@ -113,9 +186,9 @@ func IncorporateExtraContext(extraContext string, options LLMOptions) ([]gitdiff
 		return nil, nil
 	}
 
-	system := readPromptFile("task_tools.txt")
+	system := readPromptFile("task_tools_manual.txt")
 	if system == "" {
-		return nil, errors.New("prompt file task_tools.txt not found")
+		return nil, errors.New("prompt file task_tools_manual.txt not found")
 	}
 
 	prompt := fmt.Sprintf("USER EXTRA CONTEXT:\n%s\n\nPlease create initial tasks based ON THIS CONTEXT. Use the tools provided.", extraContext)
@@ -135,18 +208,154 @@ func IncorporateExtraContext(extraContext string, options LLMOptions) ([]gitdiff
 
 		// Apply tools
 		var log string
-		currentTasks, log = ApplyTools(tools, currentTasks, nil)
+		var status string
+		currentTasks, log, status = ApplyTools(tools, currentTasks, nil)
+		emitToolUpdates(options, log, status)
 		for i := range currentTasks {
 			currentTasks[i].IsManual = true
 		}
 
-		showStateDashboard("User Context", currentTasks, log, turn)
-		PrintMarkdownTasks(currentTasks)
+		showStateDashboard("User Context", currentTasks, log, turn, options.Quiet)
+		PrintMarkdownTasks(currentTasks, options.Quiet)
 
 		// Update history for next turn
 		toolsJSON, _ := json.Marshal(tools)
 		messages = append(messages, OpenAIMessage{Role: "assistant", Content: string(toolsJSON)})
-		messages = append(messages, OpenAIMessage{Role: "user", Content: "Tool Execution Log:\n" + log + "\n\nContinue if more tasks need to be created from the extra context, otherwise return []."})
+		var feedbackSB strings.Builder
+		feedbackSB.WriteString("Tool Execution Log:\n")
+		feedbackSB.WriteString(log)
+		if errs := toolErrorSummary(log); errs != "" {
+			feedbackSB.WriteString("\n\nTool Errors:\n")
+			feedbackSB.WriteString(errs)
+		}
+		feedbackSB.WriteString("\n\nContinue if more tasks need to be created from the extra context, otherwise return [].")
+		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
+	}
+
+	return currentTasks, nil
+}
+
+func GenerateTasksFromContext(commits []gitdiff.Commit, summaries []gitdiff.CommitSummary, semantics []gitdiff.CommitSemantic, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
+	system := readPromptFile("task_tools_generate.txt")
+	if system == "" {
+		return nil, errors.New("prompt file task_tools_generate.txt not found")
+	}
+
+	commitsJSON, _ := json.MarshalIndent(commits, "", "  ")
+	summaryJSON, _ := json.MarshalIndent(summaries, "", "  ")
+	semanticJSON, _ := json.MarshalIndent(semantics, "", "  ")
+	allowedList := sortedCommitList(allowedCommits)
+	allowedText := "(none)"
+	if len(allowedList) > 0 {
+		allowedText = strings.Join(allowedList, ", ")
+	}
+
+	prompt := fmt.Sprintf("Extra Context: %s\nValid Phase 1 Commits: %s\nCommits (JSON): %s\nCommit Summaries (JSON): %s\nSemantic (JSON): %s",
+		extraContext, allowedText, string(commitsJSON), string(summaryJSON), string(semanticJSON))
+
+	var currentTasks []gitdiff.TaskChange
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+
+	for turn := 0; turn < 8; turn++ {
+		var tools []ToolCall
+		err := callJSON(messages, system, options, &tools)
+		if err != nil {
+			return currentTasks, err
+		}
+		if len(tools) == 0 {
+			break
+		}
+
+		var log string
+		var status string
+		currentTasks, log, status = ApplyTools(tools, currentTasks, allowedCommits)
+		emitToolUpdates(options, log, status)
+
+		showStateDashboard("Task Gen", currentTasks, log, turn, options.Quiet)
+		PrintMarkdownTasks(currentTasks, options.Quiet)
+
+		toolsJSON, _ := json.Marshal(tools)
+		messages = append(messages, OpenAIMessage{Role: "assistant", Content: string(toolsJSON)})
+		var feedbackSB strings.Builder
+		feedbackSB.WriteString("Tool Execution Log:\n")
+		feedbackSB.WriteString(log)
+		if errs := toolErrorSummary(log); errs != "" {
+			feedbackSB.WriteString("\n\nTool Errors:\n")
+			feedbackSB.WriteString(errs)
+		}
+		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
+		for i, t := range currentTasks {
+			feedbackSB.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
+			if t.TechnicalWhy != "" {
+				feedbackSB.WriteString(fmt.Sprintf("    Details: %s\n", t.TechnicalWhy))
+			}
+			feedbackSB.WriteString(fmt.Sprintf("    Commits: %v\n", t.Commits))
+		}
+		feedbackSB.WriteString("\nContinue if more tasks need to be created, otherwise return [].")
+		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
+	}
+
+	return currentTasks, nil
+}
+
+func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, summaries []gitdiff.CommitSummary, semantics []gitdiff.CommitSemantic, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
+	system := readPromptFile("task_tools_review.txt")
+	if system == "" {
+		return nil, errors.New("prompt file task_tools_review.txt not found")
+	}
+
+	commitsJSON, _ := json.MarshalIndent(commits, "", "  ")
+	summaryJSON, _ := json.MarshalIndent(summaries, "", "  ")
+	semanticJSON, _ := json.MarshalIndent(semantics, "", "  ")
+	tasksJSON, _ := json.MarshalIndent(currentTasks, "", "  ")
+	allowedList := sortedCommitList(allowedCommits)
+	allowedText := "(none)"
+	if len(allowedList) > 0 {
+		allowedText = strings.Join(allowedList, ", ")
+	}
+
+	prompt := fmt.Sprintf("Extra Context: %s\nValid Phase 1 Commits: %s\nCommits (JSON): %s\nCommit Summaries (JSON): %s\nSemantic (JSON): %s\nCurrent Tasks (JSON): %s",
+		extraContext, allowedText, string(commitsJSON), string(summaryJSON), string(semanticJSON), string(tasksJSON))
+
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+
+	for turn := 0; turn < 8; turn++ {
+		var tools []ToolCall
+		err := callJSON(messages, system, options, &tools)
+		if err != nil {
+			return currentTasks, err
+		}
+		if len(tools) == 0 {
+			break
+		}
+
+		var log string
+		var status string
+		currentTasks, log, status = ApplyTools(tools, currentTasks, allowedCommits)
+		emitToolUpdates(options, log, status)
+
+		showStateDashboard("Task Review", currentTasks, log, turn, options.Quiet)
+		PrintMarkdownTasks(currentTasks, options.Quiet)
+
+		toolsJSON, _ := json.Marshal(tools)
+		messages = append(messages, OpenAIMessage{Role: "assistant", Content: string(toolsJSON)})
+		var feedbackSB strings.Builder
+		feedbackSB.WriteString("Tool Execution Log:\n")
+		feedbackSB.WriteString(log)
+		if errs := toolErrorSummary(log); errs != "" {
+			feedbackSB.WriteString("\n\nTool Errors:\n")
+			feedbackSB.WriteString(errs)
+		}
+		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
+		for i, t := range currentTasks {
+			feedbackSB.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
+			if t.TechnicalWhy != "" {
+				feedbackSB.WriteString(fmt.Sprintf("    Details: %s\n", t.TechnicalWhy))
+			}
+			feedbackSB.WriteString(fmt.Sprintf("    Commits: %v\n", t.Commits))
+		}
+		feedbackSB.WriteString("\nContinue reviewing until duplicates and discrepancies are resolved; return [] only when done.")
+		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
 	}
 
 	return currentTasks, nil
@@ -186,6 +395,7 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 	for hash := range allowedCommits {
 		allowedList = append(allowedList, hash)
 	}
+	sort.Strings(allowedList)
 	allowedText := "(none)"
 	if len(allowedList) > 0 {
 		allowedText = strings.Join(allowedList, ", ")
@@ -206,11 +416,13 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 
 		// Apply tools and update state
 		var log string
-		currentTasks, log = ApplyTools(tools, currentTasks, allowedCommits)
+		var status string
+		currentTasks, log, status = ApplyTools(tools, currentTasks, allowedCommits)
+		emitToolUpdates(options, log, status)
 
 		// REAL-TIME VISUALIZATION: Show the state dashboard to the user
-		showStateDashboard(commit.CommitHash, currentTasks, log, turn)
-		PrintMarkdownTasks(currentTasks)
+		showStateDashboard(commit.CommitHash, currentTasks, log, turn, options.Quiet)
+		PrintMarkdownTasks(currentTasks, options.Quiet)
 
 		// VALIDATION: Check if we can stop
 		isLinked := false
@@ -245,6 +457,10 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 		var feedbackSB strings.Builder
 		feedbackSB.WriteString("Tool Execution Log:\n")
 		feedbackSB.WriteString(log)
+		if errs := toolErrorSummary(log); errs != "" {
+			feedbackSB.WriteString("\n\nTool Errors:\n")
+			feedbackSB.WriteString(errs)
+		}
 		feedbackSB.WriteString("\n\nExtra Context (Instructions):\n")
 		feedbackSB.WriteString(extraContext)
 		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
@@ -284,7 +500,10 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 	return currentTasks, nil
 }
 
-func showStateDashboard(commitHash string, tasks []gitdiff.TaskChange, lastLog string, turn int) {
+func showStateDashboard(commitHash string, tasks []gitdiff.TaskChange, lastLog string, turn int, quiet bool) {
+	if quiet {
+		return
+	}
 	fmt.Printf("\r  [Turn %d] Incorporating %s | Current Tasks: %d                     \n", turn+1, commitHash, len(tasks))
 	// Print simple log if it contains errors
 	if strings.Contains(strings.ToLower(lastLog), "error") || strings.Contains(strings.ToLower(lastLog), "critical") {
@@ -292,7 +511,10 @@ func showStateDashboard(commitHash string, tasks []gitdiff.TaskChange, lastLog s
 	}
 }
 
-func PrintMarkdownTasks(tasks []gitdiff.TaskChange) {
+func PrintMarkdownTasks(tasks []gitdiff.TaskChange, quiet bool) {
+	if quiet {
+		return
+	}
 	fmt.Println("\n--- DEBUG: Current Task List ---")
 	for i, t := range tasks {
 		fmt.Printf("[%d] **%s** (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType)
@@ -392,8 +614,9 @@ func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]strin
 	return suggestions, nil
 }
 
-func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, string) {
+func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, string, string) {
 	var logs []string
+	var status string
 	for _, tc := range tools {
 		params := tc.Parameters
 		switch tc.Tool {
@@ -413,6 +636,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 			}
 			tasks = append(tasks, newTask)
 			logs = append(logs, fmt.Sprintf("Success: created task with index %d", len(tasks)-1))
+			status = fmt.Sprintf("Created task #%d: %s", len(tasks)-1, intent)
 
 		case "edit_task":
 			idx, ok := castInt(params["index"])
@@ -427,6 +651,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				tasks[idx].Scope = scope
 			}
 			logs = append(logs, fmt.Sprintf("Success: edited task %d", idx))
+			status = fmt.Sprintf("Edited task #%d", idx)
 
 		case "add_details":
 			idx, ok := castInt(params["index"])
@@ -444,6 +669,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 					}
 				}
 				logs = append(logs, fmt.Sprintf("Success: added detail to task %d", idx))
+				status = fmt.Sprintf("Updated details for task #%d", idx)
 			}
 
 		case "add_time":
@@ -460,6 +686,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 					tasks[idx].EstimatedHours = &newH
 				}
 				logs = append(logs, fmt.Sprintf("Success: added %d hours to task %d", h, idx))
+				status = fmt.Sprintf("Updated time for task #%d", idx)
 			}
 
 		case "add_commit_reference":
@@ -491,10 +718,131 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 					tasks[idx].Commits = append(tasks[idx].Commits, hash)
 				}
 				logs = append(logs, fmt.Sprintf("Success: added commit %s to task %d", hash, idx))
+				status = fmt.Sprintf("Linked commit %s to task #%d", hash, idx)
 			}
+
+		case "get_codebase_context":
+			query := castString(params["query"])
+			path := castString(params["path"])
+			maxResults, ok := castInt(params["max_results"])
+			if !ok || maxResults <= 0 {
+				maxResults = 20
+			}
+			if query == "" {
+				logs = append(logs, "Error: get_codebase_context requires non-empty query")
+				continue
+			}
+			out, err := getCodebaseContext(query, path, maxResults)
+			if err != nil {
+				logs = append(logs, fmt.Sprintf("Error: get_codebase_context failed: %v", err))
+				continue
+			}
+			if out == "" {
+				logs = append(logs, fmt.Sprintf("Context: no matches for query %q", query))
+				continue
+			}
+				logs = append(logs, fmt.Sprintf("Context (query %q):\n%s", query, out))
 		}
 	}
-	return tasks, strings.Join(logs, "\n")
+	return tasks, strings.Join(logs, "\n"), status
+}
+
+func getCodebaseContext(query string, path string, maxResults int) (string, error) {
+	if path == "" {
+		path = "."
+	}
+	if !strings.HasPrefix(path, ".") && !strings.HasPrefix(path, "/") {
+		path = "./" + path
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("invalid path %q: %v", path, err)
+	}
+	args := []string{"--no-heading", "--line-number", "--max-count", strconv.Itoa(maxResults), query, path}
+	cmd := exec.Command("rg", args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		// Treat "no matches" as empty output without error.
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 {
+				return "", nil
+			}
+			return "", fmt.Errorf("rg error (exit %d): %s", exitErr.ExitCode(), strings.TrimSpace(out.String()))
+		}
+		return "", err
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+func toolErrorSummary(log string) string {
+	if log == "" {
+		return ""
+	}
+	var errs []string
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "Error:") || strings.Contains(line, "CRITICAL:") {
+			errs = append(errs, line)
+		}
+	}
+	if len(errs) == 0 {
+		return ""
+	}
+	return strings.Join(errs, "\n")
+}
+
+func emitToolUpdates(options LLMOptions, log string, status string) {
+	if options.OnToolLog != nil && log != "" {
+		for _, line := range strings.Split(log, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			options.OnToolLog(line)
+		}
+	}
+	if options.OnToolStatus != nil && strings.TrimSpace(status) != "" {
+		options.OnToolStatus(status)
+	}
+}
+
+func emitLLMLog(options LLMOptions, label string, content string) {
+	if options.OnLLMLog == nil {
+		return
+	}
+	msg := fmt.Sprintf("%s:\n%s", label, truncateLog(content, 4000))
+	for _, line := range strings.Split(msg, "\n") {
+		options.OnLLMLog(line)
+	}
+}
+
+func formatMessages(messages []OpenAIMessage) string {
+	var sb strings.Builder
+	for i, m := range messages {
+		sb.WriteString(fmt.Sprintf("[%d] %s:\n", i, strings.ToUpper(m.Role)))
+		sb.WriteString(m.Content)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func truncateLog(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n…(truncated)"
+}
+
+func sortedCommitList(allowedCommits map[string]struct{}) []string {
+	if len(allowedCommits) == 0 {
+		return nil
+	}
+	var out []string
+	for hash := range allowedCommits {
+		out = append(out, hash)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Helpers for casting (aliased from gitdiff to avoid circular dependency if needed,
@@ -558,6 +906,11 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 	fullMessages := []OpenAIMessage{{Role: "system", Content: system}}
 	fullMessages = append(fullMessages, messages...)
 
+	payload := formatMessages(fullMessages)
+	emitLLMLog(options, "LLM INPUT", payload)
+	reqStart := time.Now()
+	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request queued (provider=%s model=%s)", options.Provider, options.ModelName))
+
 	switch strings.ToLower(options.Provider) {
 	case "codex", "openai":
 		url = options.BaseUrl
@@ -599,14 +952,51 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 		body, _ = json.Marshal(req)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	timeout := options.Timeout
+	if timeout == 0 {
+		timeout = 2 * time.Minute
+	}
+	heartbeat := options.Heartbeat
+	if heartbeat == 0 {
+		heartbeat = 5 * time.Second
+	}
+
+	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request url=%s timeout=%s heartbeat=%s", url, timeout, heartbeat))
+
+	reqSize := len(body)
+	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request size=%d bytes (~%d chars)", reqSize, len(payload)))
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(heartbeat)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				elapsed := time.Since(reqStart).Truncate(time.Millisecond)
+				emitLLMLog(options, "LLM STATUS", fmt.Sprintf("waiting... elapsed=%s", elapsed))
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Post(url, "application/json", bytes.NewBuffer(body))
+	close(done)
 	if err != nil {
+		emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request error after %s: %v", time.Since(reqStart).Truncate(time.Millisecond), err))
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s status %d", options.Provider, resp.StatusCode)
+		b, _ := io.ReadAll(resp.Body)
+		bodyText := strings.TrimSpace(string(b))
+		if bodyText != "" {
+			emitLLMLog(options, "LLM ERROR", bodyText)
+		}
+		return fmt.Errorf("%s status %d: %s", options.Provider, resp.StatusCode, truncateLog(bodyText, 500))
 	}
 
 	var responseText string
@@ -629,6 +1019,9 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 	if options.Debug {
 		fmt.Printf("\n--- RAW LLM RESPONSE (%s) ---\n%s\n--- END RAW RESPONSE ---\n\n", url, responseText)
 	}
+
+	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("response received in %s (status=%d)", time.Since(reqStart).Truncate(time.Millisecond), resp.StatusCode))
+	emitLLMLog(options, "LLM OUTPUT", responseText)
 
 	clean := strings.TrimSpace(responseText)
 	clean = stripCodeFences(clean)

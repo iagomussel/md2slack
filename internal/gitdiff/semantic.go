@@ -43,6 +43,25 @@ type SemanticChange struct {
 	TouchesTests bool
 }
 
+type CommitDiff struct {
+	CommitHash string `json:"commit"`
+	Diff       string `json:"diff"`
+}
+
+type CommitSummary struct {
+	CommitHash string `json:"commit"`
+	Summary    string `json:"summary"`
+	Area       string `json:"area,omitempty"`
+	Impact     string `json:"impact,omitempty"`
+}
+
+type CommitSemantic struct {
+	CommitHash   string   `json:"commit"`
+	Signals      []Signal `json:"signals,omitempty"`
+	FilesTouched int      `json:"files_touched"`
+	TouchesTests bool     `json:"touches_tests"`
+}
+
 // Pipeline Stage 1 Output
 type CommitChange struct {
 	CommitHash string   `json:"commit"`

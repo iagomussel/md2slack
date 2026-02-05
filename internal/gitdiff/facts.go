@@ -26,8 +26,10 @@ type Output struct {
 	Date     string           `json:"date"`
 	Author   string           `json:"author"`
 	Extra    string           `json:"extra_context,omitempty"`
-	Changes  []SemanticChange `json:"changes"`
 	Commits  []Commit         `json:"raw_commits,omitempty"`
+	Diffs    []CommitDiff     `json:"raw_diffs,omitempty"`
+	Summaries []CommitSummary `json:"summaries,omitempty"`
+	Semantic []CommitSemantic `json:"semantic,omitempty"`
 }
 
 func GetRepoName() string {
@@ -70,9 +72,17 @@ git log --author="%s" --regexp-ignore-case \
 
 	// 3. Parse and Analyze
 	commits := ParseGitLog(raw)
-	var allChanges []SemanticChange
+	var diffs []CommitDiff
+	var semantics []CommitSemantic
 
 	for _, commit := range commits {
+		diffText, err := sh(buildRawDiffCommand(commit.Hash))
+		if err == nil {
+			diffs = append(diffs, CommitDiff{CommitHash: commit.Hash, Diff: diffText})
+		} else {
+			diffs = append(diffs, CommitDiff{CommitHash: commit.Hash, Diff: ""})
+		}
+
 		// Parallelize signal extraction for files in this commit
 		commitSignals := make([]Signal, len(commit.Files))
 		var wg sync.WaitGroup
@@ -85,9 +95,24 @@ git log --author="%s" --regexp-ignore-case \
 		}
 		wg.Wait()
 
-		// Group signals per commit
-		changes := GroupSignals(commit.Hash, commitSignals)
-		allChanges = append(allChanges, changes...)
+		var signals []Signal
+		touchesTests := false
+		for i, s := range commitSignals {
+			if commit.Files[i].IsTest {
+				touchesTests = true
+			}
+			if len(s.Types) == 0 && len(s.Hints) == 0 {
+				continue
+			}
+			signals = append(signals, s)
+		}
+
+		semantics = append(semantics, CommitSemantic{
+			CommitHash:   commit.Hash,
+			Signals:      signals,
+			FilesTouched: len(commit.Files),
+			TouchesTests: touchesTests,
+		})
 	}
 
 	// 3. Return Output
@@ -96,8 +121,9 @@ git log --author="%s" --regexp-ignore-case \
 		Date:     date,
 		Author:   fullAuthor,
 		Extra:    extra,
-		Changes:  allChanges,
 		Commits:  commits,
+		Diffs:    diffs,
+		Semantic: semantics,
 	}
 
 	return out, nil
@@ -109,4 +135,21 @@ func toISODate(date string) string {
 		return t.Format("2006-01-02")
 	}
 	return date // Return it as-is if parsing fails
+}
+
+func buildRawDiffCommand(hash string) string {
+	excludes := []string{
+		"node_modules", "dist", "build", "vendor", ".next", ".turbo",
+		".cache", "coverage", "tmp", "tmp/*", ".git", ".idea", ".vscode",
+	}
+	var sb strings.Builder
+	sb.WriteString("git show ")
+	sb.WriteString(hash)
+	sb.WriteString(" --format= --unified=0 --minimal --ignore-all-space --no-color -- .")
+	for _, p := range excludes {
+		sb.WriteString(" ':(exclude)")
+		sb.WriteString(p)
+		sb.WriteString("'")
+	}
+	return sb.String()
 }
