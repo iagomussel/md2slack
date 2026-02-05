@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -72,10 +73,18 @@ git log --author="%s" --regexp-ignore-case \
 	var allChanges []SemanticChange
 
 	for _, commit := range commits {
-		var commitSignals []Signal
-		for _, file := range commit.Files {
-			commitSignals = append(commitSignals, ExtractSignals(file))
+		// Parallelize signal extraction for files in this commit
+		commitSignals := make([]Signal, len(commit.Files))
+		var wg sync.WaitGroup
+		for i, file := range commit.Files {
+			wg.Add(1)
+			go func(idx int, f DiffFile) {
+				defer wg.Done()
+				commitSignals[idx] = ExtractSignals(f)
+			}(i, file)
 		}
+		wg.Wait()
+
 		// Group signals per commit
 		changes := GroupSignals(commit.Hash, commitSignals)
 		allChanges = append(allChanges, changes...)
