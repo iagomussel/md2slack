@@ -6,53 +6,47 @@ import (
 	"strings"
 )
 
-func RenderReport(date string, groups []gitdiff.GroupedTask, allTasks []gitdiff.TaskChange) string {
+func RenderReport(date string, groups []gitdiff.GroupedTask, allTasks []gitdiff.TaskChange, nextActions []string) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("```\nDaily Status Report %s \n```\n\n", date))
+
+	var manualTasks []gitdiff.TaskChange
+	var commitTasks []gitdiff.TaskChange
+
+	for _, task := range allTasks {
+		if task.IsManual {
+			manualTasks = append(manualTasks, task)
+		} else {
+			commitTasks = append(commitTasks, task)
+		}
+	}
 	sb.WriteString("**Tasks**\n")
 
-	// If no groups, render all tasks sequentially
-	if len(groups) == 0 {
-		for _, task := range allTasks {
+	if len(manualTasks) > 0 {
+		for _, task := range manualTasks {
 			sb.WriteString(renderTask(task))
 			sb.WriteString("\n")
 		}
-	} else {
-		usedTasks := make(map[int]bool)
-		for _, group := range groups {
-			if group.Epic != "" && group.Epic != "none" {
-				sb.WriteString(fmt.Sprintf("\n*Epic: %s*\n", group.Epic))
-			}
+		sb.WriteString("\n")
+	}
 
-			for _, taskIdx := range group.Tasks {
-				if taskIdx < 0 || taskIdx >= len(allTasks) {
-					continue
-				}
-				usedTasks[taskIdx] = true
-				task := allTasks[taskIdx]
-				sb.WriteString(renderTask(task))
-				sb.WriteString("\n")
-			}
-		}
-
-		var ungrouped []gitdiff.TaskChange
-		for idx, task := range allTasks {
-			if !usedTasks[idx] {
-				ungrouped = append(ungrouped, task)
-			}
-		}
-
-		if len(ungrouped) > 0 {
-			for _, task := range ungrouped {
-				sb.WriteString(renderTask(task))
-				sb.WriteString("\n")
-			}
+	if len(commitTasks) > 0 {
+		for _, task := range commitTasks {
+			sb.WriteString(renderTask(task))
+			sb.WriteString("\n")
 		}
 	}
 
 	sb.WriteString("\n**Any Blockers?**\nNo\n\n")
-	sb.WriteString("**What do you plan to do next?**\n- Continue ongoing deliveries\n")
+	sb.WriteString("**What do you plan to do next?**\n")
+	if len(nextActions) == 0 {
+		sb.WriteString("- Continue ongoing deliveries\n")
+	} else {
+		for _, action := range nextActions {
+			sb.WriteString(fmt.Sprintf("- %s\n", action))
+		}
+	}
 
 	return sb.String()
 }
@@ -81,10 +75,15 @@ func renderTask(t gitdiff.TaskChange) string {
 		detailsStr = strings.Join(details, "\n") + "\n"
 	}
 
-	return fmt.Sprintf("- %s — **%dh Done** :check:\n%s  - commits: `%s`",
+	commitsLine := ""
+	if len(t.Commits) > 0 {
+		commitsLine = fmt.Sprintf("\n  - commits: `%s`", strings.Join(t.Commits, "`, `"))
+	}
+
+	return fmt.Sprintf("- %s — **%dh Done** ✅\n%s%s",
 		intent,
 		hours,
 		detailsStr,
-		strings.Join(t.Commits, "`, `"),
+		commitsLine,
 	)
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -107,11 +108,63 @@ func SynthesizeTasks(commits []gitdiff.CommitChange, previousTasks []gitdiff.Tas
 	err := callJSON(messages, system, options, &out)
 	return out, err
 }
+func IncorporateExtraContext(extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
+	if extraContext == "" {
+		return nil, nil
+	}
 
-func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskChange, extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
 	system := readPromptFile("task_tools.txt")
 	if system == "" {
 		return nil, errors.New("prompt file task_tools.txt not found")
+	}
+
+	prompt := fmt.Sprintf("USER EXTRA CONTEXT:\n%s\n\nPlease create initial tasks based ON THIS CONTEXT. Use the tools provided.", extraContext)
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+
+	var currentTasks []gitdiff.TaskChange
+	// Iterative Loop
+	for turn := 0; turn < 5; turn++ {
+		var tools []ToolCall
+		err := callJSON(messages, system, options, &tools)
+		if err != nil {
+			return currentTasks, err
+		}
+		if len(tools) == 0 {
+			break
+		}
+
+		// Apply tools
+		var log string
+		currentTasks, log = ApplyTools(tools, currentTasks, nil)
+		for i := range currentTasks {
+			currentTasks[i].IsManual = true
+		}
+
+		showStateDashboard("User Context", currentTasks, log, turn)
+		PrintMarkdownTasks(currentTasks)
+
+		// Update history for next turn
+		toolsJSON, _ := json.Marshal(tools)
+		messages = append(messages, OpenAIMessage{Role: "assistant", Content: string(toolsJSON)})
+		messages = append(messages, OpenAIMessage{Role: "user", Content: "Tool Execution Log:\n" + log + "\n\nContinue if more tasks need to be created from the extra context, otherwise return []."})
+	}
+
+	return currentTasks, nil
+}
+
+func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskChange, manualTasks []gitdiff.TaskChange, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
+	system := readPromptFile("task_tools.txt")
+	if system == "" {
+		return nil, errors.New("prompt file task_tools.txt not found")
+	}
+
+	var manualSB strings.Builder
+	for _, t := range manualTasks {
+		manualSB.WriteString(fmt.Sprintf("- %s (%s)\n", t.TaskIntent, t.Scope))
+	}
+	manualContext := manualSB.String()
+	if manualContext == "" {
+		manualContext = "(none)"
 	}
 
 	var sb strings.Builder
@@ -126,11 +179,20 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 	}
 	tasksState := sb.String()
 	if tasksState == "" {
-		tasksState = "(no tasks yet)"
+		tasksState = "(no commit tasks yet)"
+	}
+
+	var allowedList []string
+	for hash := range allowedCommits {
+		allowedList = append(allowedList, hash)
+	}
+	allowedText := "(none)"
+	if len(allowedList) > 0 {
+		allowedText = strings.Join(allowedList, ", ")
 	}
 
 	commitJSON, _ := json.MarshalIndent(commit, "", "  ")
-	prompt := fmt.Sprintf("Extra Context: %s\nCurrent Tasks (State):\n%s\nNew Commit: %s", extraContext, tasksState, string(commitJSON))
+	prompt := fmt.Sprintf("Extra Context: %s\nManual Tasks (Read-Only Context):\n%s\nCurrent Commit-Based Tasks (State):\n%s\nValid Phase 1 Commits: %s\nNew Commit to Incorporate: %s", extraContext, manualContext, tasksState, allowedText, string(commitJSON))
 
 	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
 
@@ -144,7 +206,7 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 
 		// Apply tools and update state
 		var log string
-		currentTasks, log = ApplyTools(tools, currentTasks)
+		currentTasks, log = ApplyTools(tools, currentTasks, allowedCommits)
 
 		// REAL-TIME VISUALIZATION: Show the state dashboard to the user
 		showStateDashboard(commit.CommitHash, currentTasks, log, turn)
@@ -183,6 +245,8 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 		var feedbackSB strings.Builder
 		feedbackSB.WriteString("Tool Execution Log:\n")
 		feedbackSB.WriteString(log)
+		feedbackSB.WriteString("\n\nExtra Context (Instructions):\n")
+		feedbackSB.WriteString(extraContext)
 		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
 		for i, t := range currentTasks {
 			feedbackSB.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
@@ -190,6 +254,13 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 				feedbackSB.WriteString(fmt.Sprintf("    Details: %s\n", t.TechnicalWhy))
 			}
 			feedbackSB.WriteString(fmt.Sprintf("    Commits: %v\n", t.Commits))
+		}
+		feedbackSB.WriteString("\nValid Phase 1 Commits:\n")
+		if len(allowedList) == 0 {
+			feedbackSB.WriteString("(none)\n")
+		} else {
+			feedbackSB.WriteString(strings.Join(allowedList, ", "))
+			feedbackSB.WriteString("\n")
 		}
 
 		if !isLinked {
@@ -282,7 +353,46 @@ func RefineTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.Task
 	return out, nil
 }
 
-func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string) {
+func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]string, error) {
+	system := readPromptFile("next_actions.txt")
+	if system == "" {
+		return nil, errors.New("prompt file next_actions.txt not found")
+	}
+
+	// Create a clean JSON representing only the essential task info
+	type cleanTask struct {
+		Intent string `json:"intent"`
+		Scope  string `json:"scope"`
+		Type   string `json:"type"`
+	}
+	var cleanTasks []cleanTask
+	for _, t := range tasks {
+		cleanTasks = append(cleanTasks, cleanTask{
+			Intent: t.TaskIntent,
+			Scope:  t.Scope,
+			Type:   t.TaskType,
+		})
+	}
+
+	inputJSON, _ := json.MarshalIndent(cleanTasks, "", "  ")
+	messages := []OpenAIMessage{
+		{Role: "user", Content: fmt.Sprintf("Tasks synthesized for today:\n%s", string(inputJSON))},
+	}
+
+	var suggestions []string
+	err := callJSON(messages, system, options, &suggestions)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(suggestions) == 0 {
+		fmt.Printf("Debug: Stage 3 (Next Actions) returned empty array. Tasks count: %d\n", len(tasks))
+	}
+
+	return suggestions, nil
+}
+
+func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, string) {
 	var logs []string
 	for _, tc := range tools {
 		params := tc.Parameters
@@ -359,6 +469,16 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange) ([]gitdiff.TaskCha
 				continue
 			}
 			hash := castString(params["hash"])
+			if hash != "" && (allowedCommits == nil || len(allowedCommits) == 0) {
+				logs = append(logs, fmt.Sprintf("Error: commit %s is not a valid Phase 1 commit (no allowed list available)", hash))
+				continue
+			}
+			if hash != "" {
+				if _, ok := allowedCommits[hash]; !ok {
+					logs = append(logs, fmt.Sprintf("Error: commit %s is not a valid Phase 1 commit", hash))
+					continue
+				}
+			}
 			if hash != "" {
 				found := false
 				for _, c := range tasks[idx].Commits {
@@ -383,10 +503,20 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange) ([]gitdiff.TaskCha
 // For now, I'll implement simple versions here to avoid breaking things.
 
 func castString(v interface{}) string {
-	if s, ok := v.(string); ok {
-		return s
+	switch val := v.(type) {
+	case string:
+		return val
+	case []interface{}:
+		var parts []string
+		for _, part := range val {
+			parts = append(parts, fmt.Sprint(part))
+		}
+		return strings.Join(parts, "\n")
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(v)
 	}
-	return ""
 }
 
 func castInt(v interface{}) (int, bool) {
@@ -399,6 +529,8 @@ func castInt(v interface{}) (int, bool) {
 		if i, err := strconv.Atoi(val); err == nil {
 			return i, true
 		}
+	case nil:
+		return 0, false
 	}
 	return 0, false
 }

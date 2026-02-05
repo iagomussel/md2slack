@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 )
 
 func main() {
@@ -117,21 +116,6 @@ func main() {
 		date = strings.TrimSpace(date)
 		fmt.Printf("\n--- Processing Date: %s (Repo: %s) ---\n", date, repoName)
 
-		// 1. Get Previous Day's History
-		var prevTasks []gitdiff.TaskChange
-		t, err := time.Parse("01-02-2006", date)
-		if err == nil {
-			prevDate := t.AddDate(0, 0, -1).Format("01-02-2006")
-			hist, _ := storage.LoadHistory(repoName, prevDate)
-			if hist != nil {
-				fmt.Printf("Loaded history from %s/%s (%d tasks)\n", repoName, prevDate, len(hist.Tasks))
-				for _, t := range hist.Tasks {
-					t.IsHistorical = true
-					prevTasks = append(prevTasks, t)
-				}
-			}
-		}
-
 		output, err := gitdiff.GenerateFacts(date, extra)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating facts for %s: %v\n", date, err)
@@ -167,45 +151,51 @@ func main() {
 			commitChanges = append(commitChanges, *cc)
 		}
 
-		fmt.Printf("Stage 2: Synthesizing tasks from %d analyzed commits (incremental)...\n", len(commitChanges))
-		var currentTasks []gitdiff.TaskChange
-		currentTasks = append(currentTasks, prevTasks...) // Start with previous tasks for continuity
+		fmt.Printf("Stage 2: Synthesizing tasks (incremental)...\n")
+		manualTasks, _ := llm.IncorporateExtraContext(output.Extra, llmOpts)
+		var commitTasks []gitdiff.TaskChange
+
+		if len(commitChanges) > 0 {
+			fmt.Printf("Incorporating %d analyzed commits...\n", len(commitChanges))
+		}
+
+		allowedCommits := make(map[string]struct{})
+		for _, c := range output.Commits {
+			allowedCommits[c.Hash] = struct{}{}
+		}
 
 		for i, cc := range commitChanges {
 			fmt.Printf("  [%d/%d] Incorporating commit %s...\n", i+1, len(commitChanges), cc.CommitHash)
-			updatedTasks, err := llm.IncorporateCommit(cc, currentTasks, output.Extra, llmOpts)
+			updatedTasks, err := llm.IncorporateCommit(cc, commitTasks, manualTasks, output.Extra, llmOpts, allowedCommits)
 			if err != nil {
 				fmt.Printf("Warning: failed to incorporate commit %s: %v\n", cc.CommitHash, err)
 				continue
 			}
-			currentTasks = updatedTasks
+			commitTasks = updatedTasks
 		}
 
-		if len(currentTasks) == 0 {
+		allTasks := append(manualTasks, commitTasks...)
+
+		if len(allTasks) == 0 {
 			fmt.Fprintf(os.Stderr, "Error: no tasks synthesized for %s\n", date)
 			continue
 		}
 
-		fmt.Printf("\nStage 2.5: Refining and Deduplicating tasks...\n")
-		currentTasks = llm.PruneTasks(currentTasks)
-		currentTasks, _ = llm.RefineTasks(currentTasks, llmOpts)
-
-		fmt.Printf("Stage 3: Grouping %d synthesized tasks into Epics...\n", len(currentTasks))
-		groups, err := llm.GroupTasks(currentTasks, llmOpts)
+		fmt.Println("Stage 3: Suggesting Next Actions...")
+		nextActions, err := llm.SuggestNextActions(allTasks, llmOpts)
 		if err != nil {
-			fmt.Printf("Warning: failed to group tasks for %s: %v\n", date, err)
-		}
-
-		// Save History for the NEXT run
-		if err := storage.SaveHistory(repoName, date, currentTasks, groups); err != nil {
-			fmt.Printf("Warning: failed to save history for %s: %v\n", date, err)
+			fmt.Printf("Warning: failed to suggest next actions: %v\n", err)
 		}
 
 		fmt.Println("Stage 4: Rendering report and preparing Slack blocks...")
-		report := renderer.RenderReport(date, groups, currentTasks)
+		report := renderer.RenderReport(date, nil, allTasks, nextActions)
 		fmt.Println("\n--- FINAL REPORT ---")
 		fmt.Println(report)
 
+		// Save History for the NEXT run
+		if err := storage.SaveHistory(repoName, date, allTasks, nil); err != nil {
+			fmt.Printf("Warning: failed to save history for %s: %v\n", date, err)
+		}
 		if debug {
 			fmt.Println("--- LLM Report ---")
 			fmt.Println(report)

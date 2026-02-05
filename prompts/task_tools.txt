@@ -17,10 +17,10 @@ Workflow:
   c) The task list correctly reflects the cumulative work.
 
 Tools:
-1. {"tool": "create_task", "parameters": {"intent": "string", "scope": "string", "type": "delivery|fix|refactor|chore"}}
-2. {"tool": "edit_task", "parameters": {"index": number, "intent": "string", "scope": "string"}}
-3. {"tool": "add_details", "parameters": {"index": number, "technical_why": "string"}}
+1. {"tool": "create_task", "parameters": {"intent": "<action_description>", "scope": "<component>", "type": "delivery|fix|refactor|chore"}}
+2. {"tool": "edit_task", "parameters": {"index": number, "intent": "<new_intent>", "scope": "<new_scope>"}}
+3. {"tool": "add_details", "parameters": {"index": number, "technical_why": "<bullet_point_detail>"}}
 4. {"tool": "add_time", "parameters": {"index": number, "hours": number}}
-5. {"tool": "add_commit_reference", "parameters": {"index": number, "hash": "string"}}
+5. {"tool": "add_commit_reference", "parameters": {"index": number, "hash": "<7_char_hash>"}}
 
 Return ONLY a JSON array of tool calls. NO conversation.

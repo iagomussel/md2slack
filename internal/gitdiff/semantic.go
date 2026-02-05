@@ -90,6 +90,7 @@ type TaskChange struct {
 	EstimatedHours *int     `json:"estimated_hours,omitempty"`
 	TechnicalWhy   string   `json:"technical_why,omitempty"`
 	IsHistorical   bool     `json:"is_historical,omitempty"`
+	IsManual       bool     `json:"is_manual,omitempty"`
 }
 
 func (t *TaskChange) UnmarshalJSON(data []byte) error {
