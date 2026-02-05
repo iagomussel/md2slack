@@ -32,8 +32,8 @@ type ServerConfig struct {
 }
 
 type Config struct {
-	Slack SlackConfig
-	LLM   LLMConfig
+	Slack  SlackConfig
+	LLM    LLMConfig
 	Server ServerConfig
 }
 
