@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+1	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -35,6 +36,7 @@ type model struct {
 	width     int
 	height    int
 	frame     int
+	statusWidth int
 	logVP     viewport.Model
 	autoFollow bool
 	tailMode  bool
@@ -332,10 +334,29 @@ func renderStatus(title string, line string, width int, height int) string {
 	if strings.TrimSpace(line) == "" {
 		content += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(empty)")
 	} else {
-		content += "\n" + line
+		rendered := renderMarkdown(line, max(20, width-4))
+		content += "\n" + rendered
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).Width(width).Height(height)
 	return box.Render(content)
+}
+
+func renderMarkdown(md string, width int) string {
+	if strings.TrimSpace(md) == "" {
+		return ""
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithWordWrap(width),
+		glamour.WithAutoStyle(),
+	)
+	if err != nil {
+		return md
+	}
+	out, err := r.Render(md)
+	if err != nil {
+		return md
+	}
+	return strings.TrimRight(out, "\n")
 }
 
 func appendLog(list []string, line string, max int) []string {

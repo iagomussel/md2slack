@@ -108,6 +108,7 @@ type TaskChange struct {
 	Confidence     float64  `json:"confidence"`
 	EstimatedHours *int     `json:"estimated_hours,omitempty"`
 	TechnicalWhy   string   `json:"technical_why,omitempty"`
+	Status         string   `json:"status,omitempty"`
 	IsHistorical   bool     `json:"is_historical,omitempty"`
 	IsManual       bool     `json:"is_manual,omitempty"`
 }
@@ -121,6 +122,7 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 		Confidence     *float64    `json:"confidence"`
 		EstimatedHours interface{} `json:"estimated_hours"`
 		TechnicalWhy   interface{} `json:"technical_why"`
+		Status         interface{} `json:"status"`
 	}
 
 	var raw rawTaskChange
@@ -155,6 +157,7 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 		}
 		t.TechnicalWhy = strings.Join(lines, "\n")
 	}
+	t.Status = strings.ToLower(strings.TrimSpace(castString(raw.Status)))
 
 	return nil
 }

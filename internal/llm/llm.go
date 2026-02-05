@@ -575,6 +575,104 @@ func RefineTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.Task
 	return out, nil
 }
 
+func RefineTasksWithPrompt(tasks []gitdiff.TaskChange, userPrompt string, options LLMOptions) ([]gitdiff.TaskChange, error) {
+	if strings.TrimSpace(userPrompt) == "" {
+		return RefineTasks(tasks, options)
+	}
+
+	system := readPromptFile("task_refiner.txt")
+	if system == "" {
+		return tasks, nil // Fallback
+	}
+
+	tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
+	prompt := fmt.Sprintf("User request:\n%s\n\nCurrent Task List:\n%s", strings.TrimSpace(userPrompt), string(tasksJSON))
+
+	var out []gitdiff.TaskChange
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+	err := callJSON(messages, system, options, &out)
+	if err != nil {
+		fmt.Printf("Warning: task refinement (with user prompt) failed: %v. Using unrefined list.\n", err)
+		return tasks, nil
+	}
+
+	out = PruneTasks(out)
+	if len(out) == 0 && len(tasks) > 0 {
+		return tasks, nil
+	}
+	return out, nil
+}
+
+func EditTasksWithAction(tasks []gitdiff.TaskChange, action string, selected []int, options LLMOptions) ([]gitdiff.TaskChange, error) {
+	system := readPromptFile("task_editor.txt")
+	if system == "" {
+		return tasks, errors.New("prompt file task_editor.txt not found")
+	}
+
+	tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
+	selectedJSON, _ := json.MarshalIndent(selected, "", "  ")
+	prompt := fmt.Sprintf("Action: %s\nSelected Indices: %s\nTasks: %s", action, string(selectedJSON), string(tasksJSON))
+
+	var out []gitdiff.TaskChange
+	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
+	err := callJSON(messages, system, options, &out)
+	if err != nil {
+		return tasks, err
+	}
+
+	normalized := normalizeSelected(selected, len(tasks))
+	if len(normalized) == 0 {
+		return tasks, nil
+	}
+
+	// If the model returned a full list, accept it as-is.
+	if len(out) == len(tasks) {
+		return out, nil
+	}
+
+	// If the model returned only the selected tasks, merge them back.
+	switch action {
+	case "make_longer", "make_shorter", "improve_text":
+		if len(out) == len(normalized) {
+			merged := append([]gitdiff.TaskChange(nil), tasks...)
+			for i, idx := range normalized {
+				merged[idx] = out[i]
+			}
+			return merged, nil
+		}
+		if len(out) == 1 && len(normalized) == 1 {
+			merged := append([]gitdiff.TaskChange(nil), tasks...)
+			merged[normalized[0]] = out[0]
+			return merged, nil
+		}
+	case "split_task":
+		if len(normalized) == 1 && len(out) >= 2 {
+			idx := normalized[0]
+			merged := append([]gitdiff.TaskChange(nil), tasks[:idx]...)
+			merged = append(merged, out...)
+			merged = append(merged, tasks[idx+1:]...)
+			return merged, nil
+		}
+	case "merge_tasks":
+		if len(normalized) >= 2 && len(out) == 1 {
+			first := normalized[0]
+			keep := make([]gitdiff.TaskChange, 0, len(tasks)-len(normalized)+1)
+			for i, t := range tasks {
+				if i == first {
+					keep = append(keep, out[0])
+				}
+				if !indexInSorted(i, normalized) {
+					keep = append(keep, t)
+				}
+			}
+			return keep, nil
+		}
+	}
+
+	// Fallback to original tasks if output shape is unexpected.
+	return tasks, nil
+}
+
 func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]string, error) {
 	system := readPromptFile("next_actions.txt")
 	if system == "" {
@@ -612,6 +710,30 @@ func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]strin
 	}
 
 	return suggestions, nil
+}
+
+func normalizeSelected(selected []int, max int) []int {
+	if len(selected) == 0 || max <= 0 {
+		return nil
+	}
+	uniq := make(map[int]struct{}, len(selected))
+	for _, idx := range selected {
+		if idx < 0 || idx >= max {
+			continue
+		}
+		uniq[idx] = struct{}{}
+	}
+	out := make([]int, 0, len(uniq))
+	for idx := range uniq {
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func indexInSorted(val int, sorted []int) bool {
+	i := sort.SearchInts(sorted, val)
+	return i < len(sorted) && sorted[i] == val
 }
 
 func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, string, string) {
@@ -741,7 +863,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				logs = append(logs, fmt.Sprintf("Context: no matches for query %q", query))
 				continue
 			}
-				logs = append(logs, fmt.Sprintf("Context (query %q):\n%s", query, out))
+			logs = append(logs, fmt.Sprintf("Context (query %q):\n%s", query, out))
 		}
 	}
 	return tasks, strings.Join(logs, "\n"), status

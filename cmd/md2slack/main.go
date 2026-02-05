@@ -11,6 +11,7 @@ import (
 	"md2slack/internal/slack"
 	"md2slack/internal/storage"
 	"md2slack/internal/tui"
+	"md2slack/internal/webui"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,8 +22,12 @@ import (
 func main() {
 	var debug bool
 	var install bool
+	var web bool
+	var webAddr string
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode (don't send to Slack, print JSON)")
 	flag.BoolVar(&install, "install", false, "Install the binary to /usr/bin/md2slack")
+	flag.BoolVar(&web, "web", false, "Enable web UI")
+	flag.StringVar(&webAddr, "web-addr", "127.0.0.1:8080", "Web UI address")
 	flag.Parse()
 
 	if install {
@@ -72,22 +77,24 @@ func main() {
 	}
 
 	args := flag.Args()
-	if len(args) < 1 {
-		fmt.Println("usage: md2slack [--debug] [--install] <MM-DD-YYYY> [extra context]")
+	if len(args) < 1 && !web {
+		fmt.Println("usage: md2slack [--debug] [--web] [--web-addr host:port] [--install] [<MM-DD-YYYY>] [extra context]")
 		os.Exit(1)
 	}
 
-	dates := []string{args[0]}
-	if strings.Contains(args[0], ",") {
-		dates = strings.Split(args[0], ",")
-	}
-
+	var dates []string
 	extra := ""
-	if len(args) > 1 {
-		extra = strings.Join(args[1:], " ")
-		// Clean terminal artifacts like bracketed paste markers
-		re := regexp.MustCompile(`(?i)\x1b\[\d+~`)
-		extra = re.ReplaceAllString(extra, "")
+	if len(args) > 0 {
+		dates = []string{args[0]}
+		if strings.Contains(args[0], ",") {
+			dates = strings.Split(args[0], ",")
+		}
+		if len(args) > 1 {
+			extra = strings.Join(args[1:], " ")
+			// Clean terminal artifacts like bracketed paste markers
+			re := regexp.MustCompile(`(?i)\x1b\[\d+~`)
+			extra = re.ReplaceAllString(extra, "")
+		}
 	}
 
 	cfg, err := config.Load()
@@ -116,26 +123,49 @@ func main() {
 
 	repoName := gitdiff.GetRepoName()
 
-	for _, date := range dates {
+	stageNames := []string{
+		"Preparing commit context",
+		"Summarizing commits",
+		"Generating tasks",
+		"Reviewing tasks",
+		"Suggesting next actions",
+		"Rendering report",
+	}
+
+	var webServer *webui.Server
+	if web {
+		webServer = webui.Start(webAddr, stageNames)
+	}
+
+	processDate := func(date string) {
 		date = strings.TrimSpace(date)
+		if date == "" {
+			return
+		}
 		fmt.Printf("\n--- Processing Date: %s (Repo: %s) ---\n", date, repoName)
 		runStart := time.Now()
-		var ui *tui.UI
-		if !debug {
-			ui = tui.Start([]string{
-				"Preparing commit context",
-				"Summarizing commits",
-				"Generating tasks",
-				"Reviewing tasks",
-				"Suggesting next actions",
-				"Rendering report",
-			})
+		type uiController interface {
+			StageStart(int, string)
+			StageDone(int, string)
+			Log(string)
+			Error(string)
+			Status(string)
+			Stop()
+		}
+
+		var ui uiController
+		if webServer != nil {
+			webServer.Reset(stageNames, date, repoName)
+			ui = webServer
+		} else if !debug {
+			ui = tui.Start(stageNames)
 			defer func() {
 				if ui != nil {
 					ui.Stop()
 				}
 			}()
 		}
+
 		llmOpts.Quiet = ui != nil
 		if ui != nil {
 			llmOpts.OnToolLog = ui.Log
@@ -167,7 +197,7 @@ func main() {
 		output, err := gitdiff.GenerateFacts(date, extra)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating facts for %s: %v\n", date, err)
-			continue
+			return
 		}
 
 		if debug {
@@ -227,7 +257,28 @@ func main() {
 		if ui != nil {
 			ui.StageDone(3, fmt.Sprintf("%d tasks", len(allTasks)))
 		}
+		if webServer != nil {
+			webServer.SetTasks(allTasks, nil)
+			webServer.SetReport(renderer.RenderReport(date, nil, allTasks, nil))
+		} else if ui != nil {
+			ui.Status(renderer.RenderReport(date, nil, allTasks, nil))
+		}
 		logf("Stage 4 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+
+		stageStart = time.Now()
+		refinedTasks, err := llm.RefineTasks(allTasks, llmOpts)
+		if err != nil {
+			errf("Warning: failed to refine tasks: %v", err)
+		} else if len(refinedTasks) > 0 {
+			allTasks = refinedTasks
+		}
+		if webServer != nil {
+			webServer.SetTasks(allTasks, nil)
+			webServer.SetReport(renderer.RenderReport(date, nil, allTasks, nil))
+		} else if ui != nil {
+			ui.Status(renderer.RenderReport(date, nil, allTasks, nil))
+		}
+		logf("Stage 4.5 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
 		if len(allTasks) == 0 && len(output.Summaries) > 0 {
 			errf("Warning: no tasks synthesized, falling back to summary-based tasks")
@@ -235,8 +286,16 @@ func main() {
 		}
 
 		if len(allTasks) == 0 {
-			fmt.Fprintf(os.Stderr, "Error: no tasks synthesized for %s\n", date)
-			continue
+			errf("Warning: no tasks synthesized for %s; emitting fallback task", date)
+			allTasks = []gitdiff.TaskChange{
+				{
+					TaskType:     "chore",
+					TaskIntent:   "No qualifying commits for the day",
+					Scope:        "daily-report",
+					TechnicalWhy: "No commit summaries or tasks could be synthesized for the selected date.",
+					IsManual:     true,
+				},
+			}
 		}
 
 		stageStart = time.Now()
@@ -250,6 +309,12 @@ func main() {
 		if ui != nil {
 			ui.StageDone(4, fmt.Sprintf("%d actions", len(nextActions)))
 		}
+		if webServer != nil {
+			webServer.SetTasks(allTasks, nextActions)
+			webServer.SetReport(renderer.RenderReport(date, nil, allTasks, nextActions))
+		} else if ui != nil {
+			ui.Status(renderer.RenderReport(date, nil, allTasks, nextActions))
+		}
 		logf("Stage 5 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
 		stageStart = time.Now()
@@ -257,6 +322,28 @@ func main() {
 			ui.StageStart(5, "")
 		}
 		report := renderer.RenderReport(date, nil, allTasks, nextActions)
+		if webServer != nil {
+			webServer.SetTasks(allTasks, nextActions)
+			webServer.SetReport(report)
+			webServer.SetHandlers(
+				func(report string) error {
+					if debug {
+						logf("Debug: send requested; skipping Slack send")
+						return nil
+					}
+					return slack.SendMarkdown(&cfg.Slack, report)
+				},
+				func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
+					return llm.RefineTasksWithPrompt(tasks, prompt, llmOpts)
+				},
+				func(date string, tasks []gitdiff.TaskChange, report string) error {
+					return storage.SaveHistory(repoName, date, tasks, nil, output.Summaries, report)
+				},
+			)
+			webServer.SetActionHandler(func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
+				return llm.EditTasksWithAction(tasks, action, selected, llmOpts)
+			})
+		}
 		if ui != nil {
 			ui.StageDone(5, "ready")
 			ui.Stop()
@@ -267,7 +354,7 @@ func main() {
 		fmt.Println(report)
 
 		// Save History for the NEXT run
-		if err := storage.SaveHistory(repoName, date, allTasks, nil, output.Summaries); err != nil {
+		if err := storage.SaveHistory(repoName, date, allTasks, nil, output.Summaries, report); err != nil {
 			errf("Warning: failed to save history for %s: %v", date, err)
 		}
 		if debug {
@@ -277,18 +364,31 @@ func main() {
 			blocks, err := slack.ConvertToBlocks(report)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error converting to blocks: %v\n", err)
-				continue
+				return
 			}
 			b, _ := json.MarshalIndent(blocks, "", "  ")
 			fmt.Println(string(b))
-		} else {
+		} else if webServer == nil {
 			fmt.Println("Sending to Slack...")
 			if err := slack.SendMarkdown(&cfg.Slack, report); err != nil {
 				fmt.Fprintf(os.Stderr, "Error sending to Slack for %s: %v\n", date, err)
-				continue
+				return
 			}
 			fmt.Printf("Daily Status Report for %s sent successfully!\n", date)
+		} else {
+			fmt.Println("Web UI enabled: report ready; use the Send button to post to Slack.")
 		}
 		logf("Total elapsed: %s", time.Since(runStart).Truncate(time.Millisecond))
+	}
+
+	if len(dates) == 0 && webServer != nil {
+		for date := range webServer.RunChannel() {
+			processDate(date)
+		}
+		return
+	}
+
+	for _, date := range dates {
+		processDate(date)
 	}
 }

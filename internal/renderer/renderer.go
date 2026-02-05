@@ -62,6 +62,21 @@ func renderTask(t gitdiff.TaskChange) string {
 		intent = strings.ToUpper(intent[:1]) + intent[1:]
 	}
 
+	status := strings.ToLower(strings.TrimSpace(t.Status))
+	statusLabel := "Done"
+	statusIcon := "✅"
+	switch status {
+	case "inprogress", "in_progress":
+		statusLabel = "In progress"
+		statusIcon = "🕒"
+	case "onhold", "on_hold":
+		statusLabel = "On hold"
+		statusIcon = "⏸"
+	case "done", "":
+		statusLabel = "Done"
+		statusIcon = "✅"
+	}
+
 	var details []string
 	for _, line := range strings.Split(t.TechnicalWhy, "\n") {
 		line = strings.TrimSpace(line)
@@ -80,9 +95,11 @@ func renderTask(t gitdiff.TaskChange) string {
 		commitsLine = fmt.Sprintf("\n  - commits: `%s`", strings.Join(t.Commits, "`, `"))
 	}
 
-	return fmt.Sprintf("- %s — **%dh Done** ✅\n%s%s",
+	return fmt.Sprintf("- %s — **%dh %s** %s\n%s%s",
 		intent,
 		hours,
+		statusLabel,
+		statusIcon,
 		detailsStr,
 		commitsLine,
 	)

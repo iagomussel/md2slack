@@ -9,10 +9,11 @@ import (
 )
 
 type HistoryRecord struct {
-	Date   string                `json:"date"`
-	Tasks  []gitdiff.TaskChange  `json:"tasks"`
-	Groups []gitdiff.GroupedTask `json:"groups,omitempty"`
+	Date      string                  `json:"date"`
+	Tasks     []gitdiff.TaskChange    `json:"tasks"`
+	Groups    []gitdiff.GroupedTask   `json:"groups,omitempty"`
 	Summaries []gitdiff.CommitSummary `json:"summaries,omitempty"`
+	Report    string                  `json:"report,omitempty"`
 }
 
 func getHistoryDir(repoName string) (string, error) {
@@ -27,17 +28,18 @@ func getHistoryDir(repoName string) (string, error) {
 	return dir, nil
 }
 
-func SaveHistory(repoName string, date string, tasks []gitdiff.TaskChange, groups []gitdiff.GroupedTask, summaries []gitdiff.CommitSummary) error {
+func SaveHistory(repoName string, date string, tasks []gitdiff.TaskChange, groups []gitdiff.GroupedTask, summaries []gitdiff.CommitSummary, report string) error {
 	dir, err := getHistoryDir(repoName)
 	if err != nil {
 		return err
 	}
 
 	record := HistoryRecord{
-		Date:   date,
-		Tasks:  tasks,
-		Groups: groups,
+		Date:      date,
+		Tasks:     tasks,
+		Groups:    groups,
 		Summaries: summaries,
+		Report:    report,
 	}
 
 	data, err := json.MarshalIndent(record, "", "  ")
