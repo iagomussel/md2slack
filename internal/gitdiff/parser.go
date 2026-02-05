@@ -34,8 +34,8 @@ func ParseGitLog(raw string) []Commit {
 		lines := strings.Split(chunk, "\n")
 		// The first line of the chunk is JUST the hash
 		hash := strings.Fields(lines[0])[0]
-		if len(hash) > 5 {
-			hash = hash[:5]
+		if len(hash) > 7 {
+			hash = hash[:7]
 		}
 
 		message := ""
