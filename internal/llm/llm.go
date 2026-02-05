@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -51,6 +52,11 @@ type OllamaRequest struct {
 type OllamaResponse struct {
 	Response string `json:"response"`
 	Done     bool   `json:"done"`
+}
+
+type ToolCall struct {
+	Tool       string                 `json:"tool"`
+	Parameters map[string]interface{} `json:"parameters"`
 }
 
 func readPromptFile(filename string) string {
@@ -99,6 +105,148 @@ func SynthesizeTasks(commits []gitdiff.CommitChange, previousTasks []gitdiff.Tas
 	var out []gitdiff.TaskChange
 	err := callJSON(prompt, system, options, &out)
 	return out, err
+}
+
+func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskChange, extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
+	system := readPromptFile("task_tools.txt")
+	if system == "" {
+		return nil, errors.New("prompt file task_tools.txt not found")
+	}
+
+	var sb strings.Builder
+	for i, t := range currentTasks {
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
+		if t.TechnicalWhy != "" {
+			parts := strings.Split(t.TechnicalWhy, "\n")
+			for _, p := range parts {
+				sb.WriteString(fmt.Sprintf("    - %s\n", p))
+			}
+		}
+	}
+	tasksState := sb.String()
+	if tasksState == "" {
+		tasksState = "(no tasks yet)"
+	}
+
+	commitJSON, _ := json.MarshalIndent(commit, "", "  ")
+
+	prompt := fmt.Sprintf("Extra Context: %s\nCurrent Tasks (State):\n%s\nNew Commit: %s", extraContext, tasksState, string(commitJSON))
+
+	var tools []ToolCall
+	err := callJSON(prompt, system, options, &tools)
+	if err != nil {
+		return nil, err
+	}
+
+	return ApplyTools(tools, currentTasks), nil
+}
+
+func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange) []gitdiff.TaskChange {
+	for _, tc := range tools {
+		params := tc.Parameters
+		switch tc.Tool {
+		case "create_task":
+			intent := castString(params["intent"])
+			if intent == "" {
+				continue // Skip empty tasks
+			}
+			newTask := gitdiff.TaskChange{
+				TaskIntent: intent,
+				Scope:      castString(params["scope"]),
+				TaskType:   castString(params["type"]),
+			}
+			if newTask.TaskType == "" {
+				newTask.TaskType = "delivery"
+			}
+			tasks = append(tasks, newTask)
+
+		case "edit_task":
+			idx, ok := castInt(params["index"])
+			if ok && idx >= 0 && idx < len(tasks) {
+				if intent := castString(params["intent"]); intent != "" {
+					tasks[idx].TaskIntent = intent
+				}
+				if scope := castString(params["scope"]); scope != "" {
+					tasks[idx].Scope = scope
+				}
+			}
+
+		case "add_details":
+			idx, ok := castInt(params["index"])
+			if ok && idx >= 0 && idx < len(tasks) {
+				detail := castString(params["technical_why"])
+				if detail != "" && !strings.Contains(detail, "...") {
+					if tasks[idx].TechnicalWhy == "" {
+						tasks[idx].TechnicalWhy = detail
+					} else {
+						// Avoid duplicate details
+						if !strings.Contains(tasks[idx].TechnicalWhy, detail) {
+							tasks[idx].TechnicalWhy += "\n" + detail
+						}
+					}
+				}
+			}
+
+		case "add_time":
+			idx, ok := castInt(params["index"])
+			if ok && idx >= 0 && idx < len(tasks) {
+				if h, ok := castInt(params["hours"]); ok {
+					if tasks[idx].EstimatedHours == nil {
+						tasks[idx].EstimatedHours = &h
+					} else {
+						newH := *tasks[idx].EstimatedHours + h
+						tasks[idx].EstimatedHours = &newH
+					}
+				}
+			}
+
+		case "add_commit_reference":
+			idx, ok := castInt(params["index"])
+			if ok && idx >= 0 && idx < len(tasks) {
+				hash := castString(params["hash"])
+				if hash != "" {
+					// Avoid duplicate hashes
+					found := false
+					for _, c := range tasks[idx].Commits {
+						if c == hash {
+							found = true
+							break
+						}
+					}
+					if !found {
+						tasks[idx].Commits = append(tasks[idx].Commits, hash)
+					}
+				}
+			}
+		}
+	}
+	return tasks
+}
+
+// Helpers for casting (aliased from gitdiff to avoid circular dependency if needed,
+// but here we can just use those that are already in gitdiff if they are exported.
+// Wait, they are not exported. I'll re-implement them or move them.
+// For now, I'll implement simple versions here to avoid breaking things.
+
+func castString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func castInt(v interface{}) (int, bool) {
+	switch val := v.(type) {
+	case float64:
+		return int(val), true
+	case int:
+		return val, true
+	case string:
+		if i, err := strconv.Atoi(val); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.GroupedTask, error) {

@@ -1,0 +1,24 @@
+Inputs:
+- Extra Context: (user info)
+- Current Tasks (State):
+[index] Intent (Scope) [Type]
+    - Technical details...
+
+- New Commit: (the commit to incorporate)
+
+Tools available (Return a JSON ARRAY of tool calls):
+1. {"tool": "create_task", "parameters": {"intent": "string", "scope": "string", "type": "delivery|fix|refactor|chore"}}
+   - Use this for any commit that starts a new conceptual deliverable. 
+   - MANDATORY: MUST provide non-empty "intent" and "scope".
+2. {"tool": "edit_task", "parameters": {"index": number, "intent": "string", "scope": "string"}}
+3. {"tool": "add_details", "parameters": {"index": number, "technical_why": "string"}}
+   - Add a single concrete bullet point. Call multiple times if needed.
+4. {"tool": "add_time", "parameters": {"index": number, "hours": number}}
+5. {"tool": "add_commit_reference", "parameters": {"index": number, "hash": "string"}}
+   - ALWAYS call this for the new commit to link it to a task.
+
+Rules:
+- Output ONLY the JSON ARRAY of tool calls.
+- The "index" must refer to one of the tasks in "Current Tasks".
+- If you use "create_task", the next tool call can refer to the NEW task using its expected index (last index + 1).
+- Be factual and concise.

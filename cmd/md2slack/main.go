@@ -163,10 +163,22 @@ func main() {
 			commitChanges = append(commitChanges, *cc)
 		}
 
-		fmt.Printf("Stage 2: Synthesizing tasks from %d analyzed commits...\n", len(commitChanges))
-		tasks, err := llm.SynthesizeTasks(commitChanges, prevTasks, output.Extra, llmOpts)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error synthesizing tasks for %s: %v\n", date, err)
+		fmt.Printf("Stage 2: Synthesizing tasks from %d analyzed commits (incremental)...\n", len(commitChanges))
+		var tasks []gitdiff.TaskChange
+		tasks = append(tasks, prevTasks...) // Start with previous tasks for continuity
+
+		for i, cc := range commitChanges {
+			fmt.Printf("  [%d/%d] Incorporating commit %s...\n", i+1, len(commitChanges), cc.CommitHash)
+			updatedTasks, err := llm.IncorporateCommit(cc, tasks, output.Extra, llmOpts)
+			if err != nil {
+				fmt.Printf("Warning: failed to incorporate commit %s: %v\n", cc.CommitHash, err)
+				continue
+			}
+			tasks = updatedTasks
+		}
+
+		if len(tasks) == 0 {
+			fmt.Fprintf(os.Stderr, "Error: no tasks synthesized for %s\n", date)
 			continue
 		}
 
