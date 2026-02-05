@@ -101,12 +101,14 @@ func main() {
 	}
 
 	llmOpts := llm.LLMOptions{
+		Provider:      cfg.LLM.Provider,
 		ModelName:     cfg.LLM.Model,
 		Temperature:   cfg.LLM.Temperature,
 		TopP:          cfg.LLM.TopP,
 		RepeatPenalty: cfg.LLM.RepeatPenalty,
 		ContextSize:   cfg.LLM.ContextSize,
 		BaseUrl:       baseUrl,
+		Debug:         debug,
 	}
 
 	repoName := gitdiff.GetRepoName()

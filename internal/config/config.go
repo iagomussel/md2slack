@@ -15,6 +15,7 @@ type SlackConfig struct {
 }
 
 type LLMConfig struct {
+	Provider      string
 	Model         string
 	Temperature   float64
 	TopP          float64
@@ -55,6 +56,7 @@ func Load() (*Config, error) {
 			ChannelID: getKey(slackSec, "channel_id", "ChannelID", "Channel_Id").String(),
 		},
 		LLM: LLMConfig{
+			Provider:      getKey(llmSec, "provider", "Provider").MustString("ollama"),
 			Model:         strings.Trim(getKey(llmSec, "model", "Model").MustString("llama3.2"), "\""),
 			Temperature:   getKey(llmSec, "temperature", "Temperature").MustFloat64(0.7),
 			TopP:          getKey(llmSec, "top_p", "TopP").MustFloat64(0.9),
