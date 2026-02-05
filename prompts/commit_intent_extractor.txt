@@ -3,13 +3,15 @@ Output ONLY JSON.
 Responsibility: "What did this commit do, semantically?"
 Never use evaluative language like "improves", "enhances", or "better".
 Never use long phrases or justifications.
+Prefer concise, concrete verbs (add, fix, remove, wire, validate, migrate, rename).
+Use scope as a specific component or feature area (avoid generic "backend/frontend").
 
 Output schema:
 {
   "commit": "string",
   "change_type": "bugfix|feature|refactor|test|chore",
-  "intent": "string (lowercase, factual)",
-  "scope": "string (component or area)",
+  "intent": "string (lowercase, factual, 3-8 words)",
+  "scope": "string (component or feature area)",
   "signals": ["string"],
   "confidence": number
 }

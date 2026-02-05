@@ -127,7 +127,10 @@ func callJSON(prompt, system string, options LLMOptions, target interface{}) err
 		return err
 	}
 
-	raw := []byte(strings.TrimSpace(out.Response))
+	clean := strings.TrimSpace(out.Response)
+	clean = stripCodeFences(clean)
+	clean = extractJSONPayload(clean)
+	raw := []byte(strings.TrimSpace(clean))
 
 	// Robust unmarshal: if target is a slice but response is an object, wrap it
 	err = json.Unmarshal(raw, target)
@@ -144,4 +147,59 @@ func callJSON(prompt, system string, options LLMOptions, target interface{}) err
 	}
 
 	return nil
+}
+
+func stripCodeFences(input string) string {
+	if strings.HasPrefix(input, "```") {
+		parts := strings.SplitN(input, "\n", 2)
+		if len(parts) == 2 {
+			input = parts[1]
+		}
+		if idx := strings.LastIndex(input, "```"); idx >= 0 {
+			input = input[:idx]
+		}
+	}
+	return strings.TrimSpace(input)
+}
+
+func extractJSONPayload(input string) string {
+	if input == "" {
+		return input
+	}
+
+	firstObj := strings.Index(input, "{")
+	firstArr := strings.Index(input, "[")
+
+	start := -1
+	end := -1
+
+	if firstArr >= 0 && (firstObj == -1 || firstArr < firstObj) {
+		start = firstArr
+		end = findMatchingEnd(input, start, '[', ']')
+	} else if firstObj >= 0 {
+		start = firstObj
+		end = findMatchingEnd(input, start, '{', '}')
+	}
+
+	if start >= 0 && end > start {
+		return input[start : end+1]
+	}
+
+	return input
+}
+
+func findMatchingEnd(input string, start int, open, close rune) int {
+	depth := 0
+	for i, r := range input[start:] {
+		switch r {
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return start + i
+			}
+		}
+	}
+	return -1
 }
