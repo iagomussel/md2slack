@@ -2,7 +2,6 @@ package gitdiff
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,27 +19,29 @@ func sh(cmd string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-type CommitFacts struct {
-	Hash  string
-	Facts []string
+type Output struct {
+	Date    string           `json:"date"`
+	Author  string           `json:"author"`
+	Extra   string           `json:"extra_context,omitempty"`
+	Changes []SemanticChange `json:"changes"`
+	Commits []Commit         `json:"raw_commits,omitempty"`
 }
 
-func GenerateFacts(date string, extra string) (string, error) {
+func GenerateFacts(date string, extra string) (*Output, error) {
 	// 1. Get user and repo info
 	author, _ := sh(`git config user.name`)
 	// repo, _ := sh(`git remote get-url origin | sed -E 's/.*\/([^/]+)\.git$/\1/'`) // Unused in JSON output for now
 
-	// 2. Get raw git log
-	// Added --no-merges to avoid noise
 	raw, err := sh(fmt.Sprintf(`
 git log --author="%s" \
 --since="%s 00:00:00" \
 --until="%s 23:59:59" \
 --no-merges \
+--format="commit %%h%%n%%s" \
 -p -U1 --all
 `, author, date, date))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// 3. Parse and Analyze
@@ -57,29 +58,14 @@ git log --author="%s" \
 		allChanges = append(allChanges, changes...)
 	}
 
-	// 4. Output as JSON
-	// We wrap it in a structure that includes the Context/Extra info if needed
-	// But the LLM prompt expects "INPUT:\n<content>".
-	// The user design just showed the array of changes.
-
-	type Output struct {
-		Date    string           `json:"date"`
-		Author  string           `json:"author"`
-		Extra   string           `json:"extra_context,omitempty"`
-		Changes []SemanticChange `json:"changes"`
-	}
-
-	out := Output{
+	// 4. Return Output
+	out := &Output{
 		Date:    date,
 		Author:  author,
 		Extra:   extra,
 		Changes: allChanges,
+		Commits: commits,
 	}
 
-	b, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return "", err
-	}
-
-	return string(b), nil
+	return out, nil
 }

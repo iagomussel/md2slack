@@ -41,6 +41,34 @@ type SemanticChange struct {
 	TouchesTests bool
 }
 
+// Pipeline Stage 1 Output
+type CommitChange struct {
+	CommitHash string   `json:"commit"`
+	ChangeType string   `json:"change_type"`
+	Intent     string   `json:"intent"`
+	Scope      string   `json:"scope"`
+	Signals    []string `json:"signals"`
+	Confidence float64  `json:"confidence"`
+}
+
+// Pipeline Stage 2 Output
+type TaskChange struct {
+	TaskType       string   `json:"task_type"`
+	TaskIntent     string   `json:"task_intent"`
+	Scope          string   `json:"scope"`
+	Commits        []string `json:"commits"`
+	Confidence     float64  `json:"confidence"`
+	EstimatedHours *int     `json:"estimated_hours,omitempty"`
+	TechnicalWhy   string   `json:"technical_why,omitempty"`
+}
+
+// Pipeline Stage 3 Output
+type GroupedTask struct {
+	Epic       string  `json:"epic"`
+	Tasks      []int   `json:"tasks"`
+	Confidence float64 `json:"confidence"`
+}
+
 // 2. Detection Logic
 func isTestFile(path string) bool {
 	return strings.Contains(path, "/test") ||

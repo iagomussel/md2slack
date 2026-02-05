@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"md2slack/internal/gitdiff"
 	"net/http"
-	"regexp"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -20,11 +22,12 @@ type LLMOptions struct {
 }
 
 type OllamaRequest struct {
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
-	System  string `json:"system"`
-	Stream  bool   `json:"stream"`
-	Options map[string]interface{}
+	Model   string                 `json:"model"`
+	Prompt  string                 `json:"prompt"`
+	System  string                 `json:"system"`
+	Format  string                 `json:"format,omitempty"`
+	Stream  bool                   `json:"stream"`
+	Options map[string]interface{} `json:"options"`
 }
 
 type OllamaResponse struct {
@@ -32,21 +35,73 @@ type OllamaResponse struct {
 	Done     bool   `json:"done"`
 }
 
-func GenerateStatusReport(context string, options LLMOptions) (string, error) {
-	if len(strings.TrimSpace(context)) == 0 {
-		return "", nil
+func readPromptFile(filename string) string {
+	// Try local prompts directory first
+	content, err := os.ReadFile(filepath.Join("prompts", filename))
+	if err == nil {
+		return string(content)
 	}
 
-	systemPrompt := getSystemPrompt()
-	userPrompt := fmt.Sprintf("INPUT:\n%s", context)
+	// Try ~/.md2slack/prompts/
+	home, err := os.UserHomeDir()
+	if err == nil {
+		content, err = os.ReadFile(filepath.Join(home, ".md2slack", "prompts", filename))
+		if err == nil {
+			return string(content)
+		}
+	}
 
+	return ""
+}
+
+func ExtractCommitIntent(change gitdiff.SemanticChange, commitMsg string, options LLMOptions) (*gitdiff.CommitChange, error) {
+	system := readPromptFile("commit_intent_extractor.txt")
+	if system == "" {
+		return nil, errors.New("prompt file commit_intent_extractor.txt not found")
+	}
+
+	prompt := fmt.Sprintf("Commit: %s\nMessage: %s\nSignals: %v", change.CommitHash, commitMsg, change.Signals)
+
+	var out gitdiff.CommitChange
+	err := callJSON(prompt, system, options, &out)
+	return &out, err
+}
+
+func SynthesizeTasks(commits []gitdiff.CommitChange, extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
+	system := readPromptFile("task_synthesizer.txt")
+	if system == "" {
+		return nil, errors.New("prompt file task_synthesizer.txt not found")
+	}
+
+	prompt := fmt.Sprintf("Extra Context: %s\nCommits: %v", extraContext, commits)
+
+	var out []gitdiff.TaskChange
+	err := callJSON(prompt, system, options, &out)
+	return out, err
+}
+
+func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.GroupedTask, error) {
+	system := readPromptFile("task_grouper.txt")
+	if system == "" {
+		return nil, errors.New("prompt file task_grouper.txt not found")
+	}
+
+	prompt := fmt.Sprintf("Tasks: %v", tasks)
+
+	var out []gitdiff.GroupedTask
+	err := callJSON(prompt, system, options, &out)
+	return out, err
+}
+
+func callJSON(prompt, system string, options LLMOptions, target interface{}) error {
 	reqBody, _ := json.Marshal(OllamaRequest{
 		Model:  options.ModelName,
-		Prompt: userPrompt,
-		System: systemPrompt,
+		Prompt: prompt,
+		System: system,
+		Format: "json",
 		Stream: false,
 		Options: map[string]interface{}{
-			"temperature":    options.Temperature,
+			"temperature":    0.1, // Fixed low temperature for determinism
 			"top_p":          options.TopP,
 			"repeat_penalty": options.RepeatPenalty,
 			"num_ctx":        options.ContextSize,
@@ -59,99 +114,34 @@ func GenerateStatusReport(context string, options LLMOptions) (string, error) {
 		bytes.NewBuffer(reqBody),
 	)
 	if err != nil {
-		return "", fmt.Errorf("ollama error: %v", err)
+		return err
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error != "" {
-			return "", fmt.Errorf("ollama API error: %s", errResp.Error)
-		}
-		return "", fmt.Errorf("ollama API returned status %d", resp.StatusCode)
+		return fmt.Errorf("ollama status %d", resp.StatusCode)
 	}
 
 	var out OllamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode error: %v", err)
+		return err
 	}
 
-	if err := ValidateOutput(out.Response); err != nil {
-		// Re-prompt automático com:
-		// Rewrite removing all abstract, evaluative, or summary language.
-		return GenerateStatusReport(context+"\n\nRewrite removing all abstract, evaluative, or summary language.", options)
+	raw := []byte(strings.TrimSpace(out.Response))
+
+	// Robust unmarshal: if target is a slice but response is an object, wrap it
+	err = json.Unmarshal(raw, target)
+	if err != nil {
+		// Try to see if it's a single object that should have been an array
+		if strings.HasPrefix(string(raw), "{") {
+			wrapped := append([]byte("["), raw...)
+			wrapped = append(wrapped, ']')
+			if err2 := json.Unmarshal(wrapped, target); err2 == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("unmarshal error: %v (response: %s)", err, out.Response)
 	}
 
-	return strings.TrimSpace(out.Response), nil
-}
-
-func getSystemPrompt() string {
-	return `
-THIS IS A HARD CONSTRAINT.
-Violating any rule invalidates the output.
-Do not be helpful. Be correct.
-You are generating a Daily Status Report from Git activity and User context.
-
-The input below is a JSON object. You MUST prioritize the "extra_context" field above all else.
-- "extra_context": This is what the user says they did. Use their words to name the tasks and describe the intent.
-- "changes": Use these signals to provide technical evidence (the bullet points) for the work described in "extra_context".
-
-If "extra_context" describes a specific fix (e.g., "fixed N/A answer bug"), the Task Name should be descriptive (e.g., "Fixed Correct Answer N/A Bug"), NOT just "Bug Fix".
-
-Do NOT invent work.
-Commit messages are secondary.
-
-You MUST output Markdown ONLY.
-You MUST follow the EXACT format and structure shown.
-Do NOT add explanations or commentary.
-NEVER write summaries, conclusions, overviews, or high-level interpretations.
-NEVER use generic placeholder titles if user context is available.
-NEVER use phrases like:
-- overall
-- these commits
-- this work
-- this effort
-Do NOT justify value or impact.
-State the delivered behavior only.
-Use past tense only.
-Each bullet must describe something already delivered.
-Required format:
-<blockcode>
-Daily Status Report MM-DD
-</blockcode>
-**Tasks**
-- Specific Task Name from User Context — **Xh Done** :check:
-  - Concrete behavior change supported by diff/signals
-  - Why this was done (from user context if possible)
-  - commits: ` + "`abc12`" + ` (use 5 chars)
-
-**Any Blockers?**
-false OR true — description
-
-**What do you plan to do next?**
-- 1–3 concrete next actions
-
-Rules:
-- Group commits by the logical task defined in human context
-- Do NOT mention file names or internal structure
-- Keep language short, factual, and human
-- English only
-After finishing the last section, STOP.
-`
-}
-
-var forbidden = regexp.MustCompile(
-	`(?i)\b(overall|appears to|these commits|this effort|improve|enhance|platform|system)\b`,
-)
-
-func ValidateOutput(out string) error {
-	// Re-prompt automático com:
-	// Rewrite removing all abstract, evaluative, or summary language.
-	if forbidden.MatchString(out) {
-		return errors.New("abstract or summary language detected")
-	}
 	return nil
 }

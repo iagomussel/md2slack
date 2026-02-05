@@ -6,8 +6,9 @@ import (
 )
 
 type Commit struct {
-	Hash  string
-	Files []DiffFile
+	Hash    string
+	Message string
+	Files   []DiffFile
 }
 
 func ParseGitLog(raw string) []Commit {
@@ -31,16 +32,21 @@ func ParseGitLog(raw string) []Commit {
 		}
 
 		lines := strings.Split(chunk, "\n")
-		// The first line of the chunk is now JUST the hash (and maybe author info if log was diff)
-		// But usually it's just the hash.
+		// The first line of the chunk is JUST the hash
 		hash := strings.Fields(lines[0])[0]
 		if len(hash) > 5 {
 			hash = hash[:5]
 		}
 
+		message := ""
+		if len(lines) > 1 {
+			message = strings.TrimSpace(lines[1])
+		}
+
 		commit := Commit{
-			Hash:  hash,
-			Files: parseFiles(lines),
+			Hash:    hash,
+			Message: message,
+			Files:   parseFiles(lines),
 		}
 		commits = append(commits, commit)
 	}
