@@ -25,6 +25,7 @@ type LLMOptions struct {
 	ContextSize   int
 	ModelName     string
 	BaseUrl       string
+	Token         string
 	Debug         bool
 	Quiet         bool
 	OnToolLog     func(string)
@@ -48,6 +49,27 @@ type OpenAIResponse struct {
 	Choices []struct {
 		Message OpenAIMessage `json:"message"`
 	} `json:"choices"`
+}
+
+type AnthropicRequest struct {
+	Model     string             `json:"model"`
+	System    string             `json:"system,omitempty"`
+	Messages  []AnthropicMessage `json:"messages"`
+	MaxTokens int                `json:"max_tokens"`
+}
+
+type AnthropicMessage struct {
+	Role    string               `json:"role"`
+	Content []AnthropicTextBlock `json:"content"`
+}
+
+type AnthropicTextBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type AnthropicResponse struct {
+	Content []AnthropicTextBlock `json:"content"`
 }
 
 type OllamaChatRequest struct {
@@ -1020,6 +1042,37 @@ func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.Group
 	return out, err
 }
 
+func resolveLLMURL(options LLMOptions) string {
+	provider := strings.ToLower(options.Provider)
+	url := strings.TrimSpace(options.BaseUrl)
+	if provider == "anthropic" {
+		if url == "" {
+			return "https://api.anthropic.com/v1/messages"
+		}
+		if strings.Contains(url, "/v1/messages") {
+			return url
+		}
+		return strings.TrimSuffix(url, "/") + "/v1/messages"
+	}
+	if provider == "codex" || provider == "openai" {
+		if url == "" {
+			return "https://api.openai.com/v1/chat/completions"
+		}
+		if !strings.HasSuffix(url, "/chat/completions") && !strings.HasSuffix(url, "/completions") {
+			return strings.TrimSuffix(url, "/") + "/chat/completions"
+		}
+		return url
+	}
+
+	if url == "" {
+		url = "http://localhost:11434"
+	}
+	url = strings.TrimSuffix(url, "/")
+	url = strings.TrimSuffix(url, "/api/generate")
+	url = strings.TrimSuffix(url, "/api/chat")
+	return url + "/api/chat"
+}
+
 func callJSON(messages []OpenAIMessage, system string, options LLMOptions, target interface{}) error {
 	var body []byte
 	var url string
@@ -1034,14 +1087,50 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request queued (provider=%s model=%s)", options.Provider, options.ModelName))
 
 	switch strings.ToLower(options.Provider) {
+	case "anthropic":
+		if strings.TrimSpace(options.Token) == "" {
+			return fmt.Errorf("anthropic token not configured")
+		}
+		url = resolveLLMURL(options)
+		systemText := ""
+		var anthropicMessages []AnthropicMessage
+		for _, msg := range fullMessages {
+			if msg.Role == "system" && systemText == "" {
+				systemText = msg.Content
+				continue
+			}
+			role := msg.Role
+			if role != "user" && role != "assistant" {
+				role = "user"
+			}
+			anthropicMessages = append(anthropicMessages, AnthropicMessage{
+				Role: role,
+				Content: []AnthropicTextBlock{{
+					Type: "text",
+					Text: msg.Content,
+				}},
+			})
+		}
+		maxTokens := 1024
+		if options.ContextSize > 0 {
+			maxTokens = options.ContextSize / 8
+			if maxTokens < 512 {
+				maxTokens = 512
+			}
+			if maxTokens > 4096 {
+				maxTokens = 4096
+			}
+		}
+		req := AnthropicRequest{
+			Model:     options.ModelName,
+			System:    systemText,
+			Messages:  anthropicMessages,
+			MaxTokens: maxTokens,
+		}
+		body, _ = json.Marshal(req)
+
 	case "codex", "openai":
-		url = options.BaseUrl
-		if url == "" {
-			url = "https://api.openai.com/v1/chat/completions"
-		}
-		if !strings.HasSuffix(url, "/chat/completions") && !strings.HasSuffix(url, "/completions") {
-			url = strings.TrimSuffix(url, "/") + "/chat/completions"
-		}
+		url = resolveLLMURL(options)
 
 		req := OpenAIRequest{
 			Model:    options.ModelName,
@@ -1050,14 +1139,7 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 		body, _ = json.Marshal(req)
 
 	default: // ollama
-		url = options.BaseUrl
-		if url == "" {
-			url = "http://localhost:11434"
-		}
-		url = strings.TrimSuffix(url, "/")
-		url = strings.TrimSuffix(url, "/api/generate")
-		url = strings.TrimSuffix(url, "/api/chat")
-		url = url + "/api/chat"
+		url = resolveLLMURL(options)
 
 		req := OllamaChatRequest{
 			Model:    options.ModelName,
@@ -1104,7 +1186,16 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 	}()
 
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(body))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.ToLower(options.Provider) == "anthropic" {
+		req.Header.Set("x-api-key", strings.TrimSpace(options.Token))
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+	resp, err := client.Do(req)
 	close(done)
 	if err != nil {
 		emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request error after %s: %v", time.Since(reqStart).Truncate(time.Millisecond), err))
@@ -1122,7 +1213,15 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 	}
 
 	var responseText string
-	if strings.ToLower(options.Provider) == "codex" || strings.ToLower(options.Provider) == "openai" {
+	if strings.ToLower(options.Provider) == "anthropic" {
+		var respPayload AnthropicResponse
+		if err := json.NewDecoder(resp.Body).Decode(&respPayload); err != nil {
+			return err
+		}
+		if len(respPayload.Content) > 0 {
+			responseText = respPayload.Content[0].Text
+		}
+	} else if strings.ToLower(options.Provider) == "codex" || strings.ToLower(options.Provider) == "openai" {
 		var oai OpenAIResponse
 		if err := json.NewDecoder(resp.Body).Decode(&oai); err != nil {
 			return err
