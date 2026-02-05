@@ -41,3 +41,30 @@ base_url=https://api.anthropic.com/v1/messages
 		t.Fatalf("expected LLM token")
 	}
 }
+
+func TestLoadLeavesBaseURLBlankByDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.ini")
+	content := `
+[llm]
+provider=anthropic
+model=claude-3-5-sonnet-20241022
+token=TEST_TOKEN
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.LLM.BaseURL != "" {
+		t.Fatalf("expected empty base_url by default, got %q", cfg.LLM.BaseURL)
+	}
+}

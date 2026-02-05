@@ -71,7 +71,7 @@ func Load() (*Config, error) {
 			TopP:          getKey(llmSec, "top_p", "TopP").MustFloat64(0.9),
 			RepeatPenalty: getKey(llmSec, "repeat_penalty", "RepeatPenalty").MustFloat64(1.1),
 			ContextSize:   getKey(llmSec, "context_size", "ContextSize", "num_ctx").MustInt(8192),
-			BaseURL:       strings.Trim(getKey(llmSec, "base_url", "BaseUrl", "BaseURL").MustString("http://localhost:11434/api/generate"), "\""),
+			BaseURL:       strings.Trim(getKey(llmSec, "base_url", "BaseUrl", "BaseURL").MustString(""), "\""),
 			Token:         strings.Trim(getKey(llmSec, "token", "Token").String(), "\""),
 		},
 		Server: ServerConfig{

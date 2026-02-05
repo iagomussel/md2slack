@@ -126,9 +126,6 @@ func main() {
 	}
 
 	baseUrl := cfg.LLM.BaseURL
-	if baseUrl == "" {
-		baseUrl = "http://127.0.0.1:11434"
-	}
 
 	llmOpts := llm.LLMOptions{
 		Provider:      cfg.LLM.Provider,
