@@ -22,11 +22,19 @@ type LLMConfig struct {
 	RepeatPenalty float64
 	ContextSize   int
 	BaseURL       string
+	Token         string
+}
+
+type ServerConfig struct {
+	Host              string
+	Port              int
+	AutoIncrementPort bool
 }
 
 type Config struct {
 	Slack SlackConfig
 	LLM   LLMConfig
+	Server ServerConfig
 }
 
 func Load() (*Config, error) {
@@ -48,6 +56,7 @@ func Load() (*Config, error) {
 
 	slackSec := getSection(cfg, "slack", "Slack")
 	llmSec := getSection(cfg, "llm", "LLM")
+	serverSec := getSection(cfg, "server", "Server")
 
 	return &Config{
 		Slack: SlackConfig{
@@ -63,6 +72,12 @@ func Load() (*Config, error) {
 			RepeatPenalty: getKey(llmSec, "repeat_penalty", "RepeatPenalty").MustFloat64(1.1),
 			ContextSize:   getKey(llmSec, "context_size", "ContextSize", "num_ctx").MustInt(8192),
 			BaseURL:       strings.Trim(getKey(llmSec, "base_url", "BaseUrl", "BaseURL").MustString("http://localhost:11434/api/generate"), "\""),
+			Token:         strings.Trim(getKey(llmSec, "token", "Token").String(), "\""),
+		},
+		Server: ServerConfig{
+			Host:              strings.Trim(getKey(serverSec, "host", "Host").MustString("127.0.0.1"), "\""),
+			Port:              getKey(serverSec, "port", "Port").MustInt(8080),
+			AutoIncrementPort: getKey(serverSec, "auto_increment_port", "AutoIncrementPort").MustBool(true),
 		},
 	}, nil
 }
