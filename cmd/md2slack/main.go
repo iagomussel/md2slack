@@ -161,14 +161,14 @@ func main() {
 			commitChanges = append(commitChanges, *cc)
 		}
 
-		fmt.Println("Stage 2: Synthesizing tasks...")
+		fmt.Printf("Stage 2: Synthesizing tasks from %d analyzed commits...\n", len(commitChanges))
 		tasks, err := llm.SynthesizeTasks(commitChanges, prevTasks, output.Extra, llmOpts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error synthesizing tasks for %s: %v\n", date, err)
 			continue
 		}
 
-		fmt.Println("Stage 3: Grouping tasks...")
+		fmt.Printf("Stage 3: Grouping %d synthesized tasks into Epics...\n", len(tasks))
 		groups, err := llm.GroupTasks(tasks, llmOpts)
 		if err != nil {
 			fmt.Printf("Warning: failed to group tasks for %s: %v\n", date, err)
@@ -179,7 +179,7 @@ func main() {
 			fmt.Printf("Warning: failed to save history for %s: %v\n", date, err)
 		}
 
-		fmt.Println("Stage 4: Rendering report...")
+		fmt.Println("Stage 4: Rendering report and preparing Slack blocks...")
 		report := renderer.RenderReport(date, groups, tasks)
 
 		if debug {
