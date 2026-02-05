@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/ini.v1"
 )
@@ -18,6 +19,7 @@ type LLMConfig struct {
 	Temperature   float64
 	TopP          float64
 	RepeatPenalty float64
+	ContextSize   int
 	BaseURL       string
 }
 
@@ -43,21 +45,41 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	slackSec := cfg.Section("slack")
-	llmSec := cfg.Section("llm")
+	slackSec := getSection(cfg, "slack", "Slack")
+	llmSec := getSection(cfg, "llm", "LLM")
 
 	return &Config{
 		Slack: SlackConfig{
-			ClientID:  slackSec.Key("client_id").String(),
-			BotToken:  slackSec.Key("bot_token").String(),
-			ChannelID: slackSec.Key("channel_id").String(),
+			ClientID:  getKey(slackSec, "client_id", "ClientID", "Client_Id").String(),
+			BotToken:  getKey(slackSec, "bot_token", "BotToken", "Bot_Token").String(),
+			ChannelID: getKey(slackSec, "channel_id", "ChannelID", "Channel_Id").String(),
 		},
 		LLM: LLMConfig{
-			Model:         llmSec.Key("model").MustString("llama3.2"),
-			Temperature:   llmSec.Key("temperature").MustFloat64(0.7),
-			TopP:          llmSec.Key("top_p").MustFloat64(0.9),
-			RepeatPenalty: llmSec.Key("repeat_penalty").MustFloat64(1.1),
-			BaseURL:       llmSec.Key("base_url").MustString("http://localhost:11434/api/generate"),
+			Model:         strings.Trim(getKey(llmSec, "model", "Model").MustString("llama3.2"), "\""),
+			Temperature:   getKey(llmSec, "temperature", "Temperature").MustFloat64(0.7),
+			TopP:          getKey(llmSec, "top_p", "TopP").MustFloat64(0.9),
+			RepeatPenalty: getKey(llmSec, "repeat_penalty", "RepeatPenalty").MustFloat64(1.1),
+			ContextSize:   getKey(llmSec, "context_size", "ContextSize", "num_ctx").MustInt(8192),
+			BaseURL:       strings.Trim(getKey(llmSec, "base_url", "BaseUrl", "BaseURL").MustString("http://localhost:11434/api/generate"), "\""),
 		},
 	}, nil
+}
+
+func getSection(cfg *ini.File, names ...string) *ini.Section {
+	for _, name := range names {
+		if sec, err := cfg.GetSection(name); err == nil {
+			return sec
+		}
+	}
+	return cfg.Section(names[0])
+}
+
+func getKey(sec *ini.Section, keys ...string) *ini.Key {
+	for _, k := range keys {
+		if key, err := sec.GetKey(k); err == nil {
+			return key
+		}
+	}
+	// Return the first one so Must* functions can handle the default on it
+	return sec.Key(keys[0])
 }

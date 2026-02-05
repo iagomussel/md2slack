@@ -14,6 +14,7 @@ type LLMOptions struct {
 	Temperature   float64
 	TopP          float64
 	RepeatPenalty float64
+	ContextSize   int
 	ModelName     string
 	BaseUrl       string
 }
@@ -48,6 +49,7 @@ func GenerateStatusReport(context string, options LLMOptions) (string, error) {
 			"temperature":    options.Temperature,
 			"top_p":          options.TopP,
 			"repeat_penalty": options.RepeatPenalty,
+			"num_ctx":        options.ContextSize,
 		},
 	})
 

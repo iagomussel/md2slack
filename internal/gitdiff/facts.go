@@ -50,7 +50,7 @@ git log --author="%s" \
 	for _, commit := range commits {
 		var commitSignals []Signal
 		for _, file := range commit.Files {
-			commitSignals = append(commitSignals, ExtractSignals(file)...)
+			commitSignals = append(commitSignals, ExtractSignals(file))
 		}
 		// Group signals per commit
 		changes := GroupSignals(commit.Hash, commitSignals)

@@ -1,6 +1,7 @@
 package gitdiff
 
 import (
+	"md2slack/internal/hintdetector"
 	"strings"
 )
 
@@ -28,9 +29,9 @@ const (
 )
 
 type Signal struct {
-	Type SignalType
-	File string
-	Hint string
+	File  string       `json:"file"`
+	Types []SignalType `json:"types"`
+	Hints []string     `json:"hints,omitempty"`
 }
 
 type SemanticChange struct {
@@ -41,106 +42,70 @@ type SemanticChange struct {
 }
 
 // 2. Detection Logic
-func detectTimeout(line string) bool {
-	return strings.Contains(line, "timeout") &&
-		(strings.Contains(line, "waitFor") || strings.Contains(line, "setTimeout"))
-}
-
-func detectErrorHandling(line string) bool {
-	return strings.Contains(line, "try {") ||
-		strings.Contains(line, "catch") ||
-		strings.Contains(line, "if err !=") ||
-		strings.Contains(line, "throw new Error")
-}
-
 func isTestFile(path string) bool {
 	return strings.Contains(path, "/test") ||
 		strings.Contains(path, ".spec.") ||
 		strings.Contains(path, ".test.")
 }
 
-// 3. Signal Extractor
-func detectSchemaChange(line string, path string) bool {
-	return strings.Contains(path, "migration") ||
-		strings.Contains(path, "schema") ||
-		strings.Contains(line, "CREATE TABLE") ||
-		strings.Contains(line, "ALTER TABLE")
+var detectors = []hintdetector.Detector{
+	hintdetector.TimeoutDetector{},
+	hintdetector.ErrorHandlingDetector{},
+	hintdetector.SchemaDetector{},
+	hintdetector.UIDetector{},
+	hintdetector.LogicDetector{},
+	hintdetector.NextJSDetector{},
+	hintdetector.ExpressDetector{},
+	hintdetector.DrizzleDetector{},
+	hintdetector.MigrationDetector{},
+	hintdetector.TypeScriptDetector{},
+	hintdetector.AuthDetector{},
 }
 
-func detectLogicChange(line string) bool {
-	return strings.Contains(line, "for ") ||
-		strings.Contains(line, "if ") ||
-		strings.Contains(line, "return") ||
-		strings.Contains(line, "else")
-}
+func ExtractSignals(file DiffFile) Signal {
+	s := Signal{
+		File: file.Path,
+	}
 
-func detectUIState(line string) bool {
-	return strings.Contains(line, "useState") ||
-		strings.Contains(line, "useEffect") ||
-		strings.Contains(line, "useRef") ||
-		strings.Contains(line, "loading")
-}
+	seenTypes := make(map[SignalType]bool)
+	addType := func(t SignalType) {
+		if !seenTypes[t] {
+			s.Types = append(s.Types, t)
+			seenTypes[t] = true
+		}
+	}
 
-func ExtractSignals(file DiffFile) []Signal {
-	var signals []Signal
+	seenHints := make(map[string]bool)
+	addHint := func(h string) {
+		if h != "" && !seenHints[h] {
+			s.Hints = append(s.Hints, h)
+			seenHints[h] = true
+		}
+	}
 
 	if file.IsNew {
-		signals = append(signals, Signal{
-			Type: SignalNewFile,
-			File: file.Path,
-		})
+		addType(SignalNewFile)
 	}
 
 	if file.IsTest {
 		if file.IsNew {
-			signals = append(signals, Signal{
-				Type: SignalTestAdded,
-				File: file.Path,
-			})
+			addType(SignalTestAdded)
 		} else {
-			signals = append(signals, Signal{
-				Type: SignalTestModified,
-				File: file.Path,
-			})
+			addType(SignalTestModified)
 		}
 	}
 
 	for _, line := range file.Additions {
-		switch {
-		case detectTimeout(line):
-			signals = append(signals, Signal{
-				Type: SignalTimeoutChange,
-				File: file.Path,
-				Hint: "test execution timing adjusted",
-			})
-		case detectErrorHandling(line):
-			signals = append(signals, Signal{
-				Type: SignalErrorHandling,
-				File: file.Path,
-				Hint: "guarded failure path",
-			})
-		case detectSchemaChange(line, file.Path):
-			signals = append(signals, Signal{
-				Type: SignalSchemaChange,
-				File: file.Path,
-				Hint: "data model update",
-			})
-		case detectUIState(line):
-			signals = append(signals, Signal{
-				Type: SignalLogicChange, // Using generic type for now or add SignalUIChange
-				File: file.Path,
-				Hint: "ui state management",
-			})
-		case detectLogicChange(line):
-			signals = append(signals, Signal{
-				Type: SignalLogicChange,
-				File: file.Path,
-				Hint: "flow control logic",
-			})
+		for _, d := range detectors {
+			sigType, hint, found := d.Detect(line, file.Path)
+			if found {
+				addType(SignalType(sigType))
+				addHint(hint)
+			}
 		}
 	}
 
-	return signals
+	return s
 }
 
 // 4. Change Grouper
@@ -156,6 +121,11 @@ func GroupSignals(commitHash string, signals []Signal) []SemanticChange {
 	groups := map[string]*SemanticChange{}
 
 	for _, s := range signals {
+		// Only include signals that have interesting types
+		if len(s.Types) == 0 {
+			continue
+		}
+
 		key := domainKey(s.File)
 
 		if _, ok := groups[key]; !ok {
@@ -166,10 +136,12 @@ func GroupSignals(commitHash string, signals []Signal) []SemanticChange {
 
 		group := groups[key]
 		group.Signals = append(group.Signals, s)
-		group.FilesTouched++ // This is an approximation, ideally we track unique files
+		group.FilesTouched++
 
-		if s.Type == SignalTestAdded || s.Type == SignalTestModified {
-			group.TouchesTests = true
+		for _, t := range s.Types {
+			if t == SignalTestAdded || t == SignalTestModified {
+				group.TouchesTests = true
+			}
 		}
 	}
 
