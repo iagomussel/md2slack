@@ -385,109 +385,677 @@ const indexHTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>md2slack Web UI</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-0: #0b0d11;
+      --bg-1: #0f1319;
+      --bg-2: #151b23;
+      --bg-3: #1b232e;
+      --line-1: #293241;
+      --line-2: #3a4658;
+      --text-0: #f2f6fb;
+      --text-1: #cdd6e1;
+      --text-2: #9aa6b4;
+      --amber-400: #ffc36b;
+      --amber-500: #ffb04a;
+      --amber-700: #c77812;
+      --green-500: #3bd48a;
+      --red-500: #f06363;
+      --shadow-1: 0 14px 30px rgba(0, 0, 0, 0.45);
+      --shadow-2: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      --glow-amber: 0 0 0 1px rgba(255, 176, 74, 0.35), 0 0 18px rgba(255, 176, 74, 0.22);
+      --glow-soft: 0 0 0 1px rgba(121, 135, 156, 0.3), 0 0 18px rgba(8, 10, 14, 0.4);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      color: var(--text-1);
+      background: var(--bg-0);
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      background:
+        radial-gradient(1200px 620px at 15% -10%, #1a202a 0%, transparent 60%),
+        radial-gradient(900px 500px at 110% -20%, #151a22 0%, transparent 55%),
+        linear-gradient(180deg, #0b0d11 0%, #0c1117 100%);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .app-shell::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(120deg, rgba(255, 255, 255, 0.02) 0%, transparent 40%),
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.02) 1px, transparent 1px, transparent 4px);
+      opacity: 0.22;
+      pointer-events: none;
+    }
+
+    .app-header {
+      position: relative;
+      z-index: 1;
+      border-bottom: 1px solid var(--line-1);
+      background: rgba(11, 14, 18, 0.86);
+      backdrop-filter: blur(8px);
+    }
+
+    .app-header-inner {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #1d2633, #0f1319);
+      border: 1px solid var(--line-1);
+      box-shadow: var(--glow-soft);
+      position: relative;
+    }
+
+    .brand-icon::after {
+      content: "";
+      position: absolute;
+      inset: 8px;
+      border-radius: 8px;
+      background: radial-gradient(circle at 30% 30%, rgba(255, 176, 74, 0.6), transparent 60%);
+      opacity: 0.4;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-family: "Rajdhani", "IBM Plex Sans", sans-serif;
+      font-size: 20px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-0);
+    }
+
+    .meta {
+      font-size: 12px;
+      color: var(--text-2);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .mode-pill {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: var(--amber-400);
+      padding: 6px 10px;
+      border: 1px solid rgba(255, 176, 74, 0.4);
+      border-radius: 999px;
+      box-shadow: var(--glow-amber);
+    }
+
+    .app-glow {
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(255, 176, 74, 0.7), transparent);
+      opacity: 0.5;
+    }
+
+    .app-main {
+      position: relative;
+      z-index: 1;
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 26px 24px 40px;
+    }
+
+    .app-grid {
+      display: grid;
+      gap: 24px;
+    }
+
+    .flex-1 {
+      flex: 1;
+    }
+
+    @media (min-width: 1100px) {
+      .app-grid {
+        grid-template-columns: 280px minmax(0, 1fr) 360px;
+      }
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .panel {
+      background: var(--bg-2);
+      border: 1px solid var(--line-1);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: var(--shadow-2);
+      animation: panelIn 0.6s ease both;
+      animation-delay: var(--delay, 0s);
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      font-family: "Rajdhani", "IBM Plex Sans", sans-serif;
+      font-size: 12px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-2);
+    }
+
+    .panel-header .led {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--amber-500);
+      box-shadow: 0 0 8px rgba(255, 176, 74, 0.6);
+    }
+
+    .panel-terminal {
+      background: #0b0f14;
+      border-color: #1f2630;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+    }
+
+    .panel-terminal .panel-header {
+      color: #9aa6b4;
+    }
+
+    .terminal-body {
+      height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-family: "IBM Plex Mono", "IBM Plex Sans", monospace;
+      font-size: 11px;
+      color: #c5ced8;
+      padding-right: 8px;
+      background:
+        repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.02) 1px, transparent 1px, transparent 4px);
+      border-radius: 12px;
+    }
+
+    .stages {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .stage-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--line-1);
+      background: var(--bg-3);
+      font-size: 12px;
+      color: var(--text-1);
+    }
+
+    .stage-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--line-2);
+      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.3);
+    }
+
+    .stage-item.stage-running .stage-dot {
+      background: var(--amber-500);
+      box-shadow: 0 0 10px rgba(255, 176, 74, 0.7);
+      animation: pulse 1.4s ease infinite;
+    }
+
+    .stage-item.stage-done .stage-dot {
+      background: var(--green-500);
+      box-shadow: 0 0 8px rgba(59, 212, 138, 0.5);
+    }
+
+    .status-line {
+      font-size: 13px;
+      color: var(--text-0);
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line-1);
+      background: linear-gradient(180deg, rgba(24, 32, 42, 0.8), rgba(16, 22, 30, 0.8));
+    }
+
+    .panel-grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    @media (min-width: 820px) {
+      .panel-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .input,
+    .select,
+    .textarea {
+      background: var(--bg-3);
+      border: 1px solid var(--line-1);
+      border-radius: 10px;
+      color: var(--text-0);
+      font-size: 12px;
+      padding: 8px 10px;
+      outline: none;
+      transition: border 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .input:focus,
+    .select:focus,
+    .textarea:focus {
+      border-color: var(--amber-500);
+      box-shadow: var(--glow-amber);
+    }
+
+    .textarea {
+      width: 100%;
+      min-height: 140px;
+      resize: vertical;
+      font-size: 13px;
+    }
+
+    .btn {
+      border-radius: 10px;
+      border: 1px solid transparent;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 600;
+      padding: 8px 14px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border 0.2s ease, background 0.2s ease;
+    }
+
+    .btn:active {
+      transform: translateY(1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #ffb04a, #ff9828);
+      color: #1a1207;
+      box-shadow: 0 6px 18px rgba(255, 152, 40, 0.35);
+    }
+
+    .btn-secondary {
+      background: var(--bg-3);
+      border-color: var(--line-2);
+      color: var(--text-1);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--amber-500);
+      color: var(--amber-400);
+      box-shadow: var(--glow-amber);
+    }
+
+    .btn-danger {
+      background: rgba(240, 99, 99, 0.2);
+      border-color: rgba(240, 99, 99, 0.5);
+      color: #ffb3b3;
+    }
+
+    .task-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .task-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      border-radius: 12px;
+      border: 1px solid var(--line-1);
+      padding: 10px;
+      background: var(--bg-3);
+      cursor: pointer;
+      transition: border 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    }
+
+    .task-row:hover {
+      transform: translateY(-1px);
+      border-color: var(--line-2);
+    }
+
+    .task-row.active {
+      border-color: var(--amber-500);
+      box-shadow: var(--glow-amber);
+    }
+
+    .task-meta {
+      font-size: 11px;
+      color: var(--text-2);
+    }
+
+    .task-title {
+      font-weight: 600;
+      color: var(--text-0);
+      font-size: 13px;
+    }
+
+    .checkbox {
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      border: 1px solid var(--line-2);
+      background: #0f1319;
+      position: relative;
+      margin-top: 2px;
+      cursor: pointer;
+    }
+
+    .checkbox:checked {
+      background: var(--amber-500);
+      border-color: var(--amber-500);
+      box-shadow: 0 0 10px rgba(255, 176, 74, 0.5);
+    }
+
+    .checkbox:checked::after {
+      content: "";
+      position: absolute;
+      width: 4px;
+      height: 8px;
+      border: 2px solid #1a1207;
+      border-top: 0;
+      border-left: 0;
+      transform: rotate(45deg);
+      left: 5px;
+      top: 1px;
+    }
+
+    .action-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .editor-card {
+      border-radius: 14px;
+      border: 1px solid var(--line-1);
+      padding: 14px;
+      background: linear-gradient(180deg, rgba(22, 28, 36, 0.9), rgba(15, 20, 27, 0.95));
+    }
+
+    .editor-card label {
+      display: block;
+      margin-top: 12px;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-2);
+    }
+
+    .editor-card label:first-of-type {
+      margin-top: 0;
+    }
+
+    .editor-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .preview-body {
+      max-height: 720px;
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text-1);
+    }
+
+    .preview-body h1,
+    .preview-body h2,
+    .preview-body h3 {
+      color: var(--text-0);
+      font-family: "Rajdhani", "IBM Plex Sans", sans-serif;
+      letter-spacing: 0.04em;
+      margin-top: 1.2em;
+    }
+
+    .preview-body a {
+      color: var(--amber-400);
+      text-decoration: none;
+    }
+
+    .preview-body code {
+      background: rgba(255, 176, 74, 0.1);
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+
+    .task-preview-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .task-preview-item {
+      border-radius: 14px;
+      border: 1px solid var(--line-1);
+      padding: 12px;
+      background: var(--bg-3);
+    }
+
+    .task-preview-header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+      color: var(--text-0);
+      font-weight: 600;
+    }
+
+    .task-preview-meta {
+      font-size: 11px;
+      color: var(--text-2);
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line-2);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-2);
+    }
+
+    .chip.status-done {
+      border-color: rgba(59, 212, 138, 0.4);
+      color: #8cebc0;
+    }
+
+    .chip.status-inprogress {
+      border-color: rgba(255, 176, 74, 0.5);
+      color: var(--amber-400);
+    }
+
+    .chip.status-onhold {
+      border-color: rgba(240, 99, 99, 0.5);
+      color: #ffb3b3;
+    }
+
+    @keyframes panelIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 6px rgba(255, 176, 74, 0.4); }
+      50% { box-shadow: 0 0 12px rgba(255, 176, 74, 0.9); }
+      100% { box-shadow: 0 0 6px rgba(255, 176, 74, 0.4); }
+    }
+
+    @media (max-width: 720px) {
+      .app-header-inner {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .mode-pill {
+        align-self: flex-start;
+      }
+    }
+  </style>
 </head>
-<body class="min-h-screen bg-slate-100 text-slate-900">
-  <header class="border-b border-slate-200 bg-slate-900 text-white">
-    <div class="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-      <div class="flex items-center gap-4">
-        <div class="h-10 w-10 rounded-lg bg-slate-700"></div>
-        <div>
-          <h1 class="text-lg font-semibold tracking-wide">md2slack Web UI</h1>
-          <div id="meta" class="text-xs text-slate-300"></div>
-        </div>
-      </div>
-      <div class="text-xs text-slate-300">web mode</div>
-    </div>
-  </header>
-
-  <main class="mx-auto max-w-7xl px-6 py-6">
-    <div class="grid gap-6 lg:grid-cols-12">
-      <section class="lg:col-span-3 space-y-6">
-        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">Stages</div>
-          <ul id="stages" class="space-y-2 text-sm"></ul>
-        </div>
-        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">Status</div>
-          <div id="status" class="text-sm text-slate-700"></div>
-        </div>
-        <div class="rounded-xl border border-slate-200 bg-slate-900 p-4 shadow-sm">
-          <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-300">Logs</div>
-          <div id="logs" class="h-64 overflow-auto whitespace-pre-wrap text-xs text-slate-200"></div>
-        </div>
-      </section>
-
-      <section class="lg:col-span-5 space-y-6">
-        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-            <div class="text-xs font-semibold uppercase tracking-widest text-slate-500">Run + Tasks</div>
-            <div class="flex items-center gap-2">
-              <input type="text" id="date" placeholder="MM-DD-YYYY" class="w-36 rounded-md border border-slate-300 px-2 py-1 text-xs" />
-              <button class="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white" id="run">Run</button>
-              <button class="rounded-md bg-slate-700 px-3 py-1 text-xs font-semibold text-white" id="send">Send to Slack</button>
-            </div>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="app-header-inner">
+        <div class="brand">
+          <div class="brand-icon"></div>
+          <div>
+            <h1>md2slack Web UI</h1>
+            <div id="meta" class="meta"></div>
           </div>
+        </div>
+        <div class="mode-pill">web mode</div>
+      </div>
+      <div class="app-glow"></div>
+    </header>
 
-          <div class="grid gap-4 md:grid-cols-2">
-            <div class="space-y-3">
-              <div class="text-xs font-semibold uppercase tracking-widest text-slate-500">Task List</div>
-              <div id="task-list" class="space-y-2"></div>
-              <div class="flex flex-wrap gap-2 pt-2">
-                <button class="rounded-md bg-slate-900 px-2 py-1 text-xs font-semibold text-white" id="action-merge">Merge</button>
-                <button class="rounded-md bg-slate-700 px-2 py-1 text-xs font-semibold text-white" id="action-split">Split</button>
-                <button class="rounded-md bg-slate-700 px-2 py-1 text-xs font-semibold text-white" id="action-longer">Make longer</button>
-                <button class="rounded-md bg-slate-700 px-2 py-1 text-xs font-semibold text-white" id="action-shorter">Make shorter</button>
-                <button class="rounded-md bg-slate-700 px-2 py-1 text-xs font-semibold text-white" id="action-improve">Improve text</button>
-                <button class="rounded-md bg-red-600 px-2 py-1 text-xs font-semibold text-white" id="action-remove">Remove</button>
+    <main class="app-main">
+      <div class="app-grid">
+        <section class="stack">
+          <div class="panel" style="--delay: 0.05s">
+            <div class="panel-header">Stages <span class="led"></span></div>
+            <ul id="stages" class="stages"></ul>
+          </div>
+          <div class="panel" style="--delay: 0.1s">
+            <div class="panel-header">Status <span class="led"></span></div>
+            <div id="status" class="status-line"></div>
+          </div>
+          <div class="panel panel-terminal" style="--delay: 0.15s">
+            <div class="panel-header">Logs <span class="led"></span></div>
+            <div id="logs" class="terminal-body"></div>
+          </div>
+        </section>
+
+        <section class="stack">
+          <div class="panel" style="--delay: 0.08s">
+            <div class="toolbar">
+              <div class="panel-header">Run + Tasks <span class="led"></span></div>
+              <div class="control-row">
+                <input type="text" id="date" placeholder="MM-DD-YYYY" class="input" />
+                <button class="btn btn-primary" id="run">Run</button>
+                <button class="btn btn-secondary" id="send">Send to Slack</button>
               </div>
             </div>
 
-            <div class="space-y-3">
-              <div class="text-xs font-semibold uppercase tracking-widest text-slate-500">Editor</div>
-              <div class="rounded-lg border border-slate-200 p-3">
-                <label class="block text-xs text-slate-500">Title</label>
-                <input id="edit-intent" class="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm" />
-                <label class="mt-3 block text-xs text-slate-500">Time (hours)</label>
-                <input id="edit-hours" type="number" min="0" class="mt-1 w-24 rounded-md border border-slate-300 px-2 py-1 text-sm" />
-                <label class="mt-3 block text-xs text-slate-500">Status</label>
-                <select id="edit-status" class="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm">
-                  <option value="done">done</option>
-                  <option value="inprogress">inprogress</option>
-                  <option value="onhold">onhold</option>
-                </select>
-                <label class="mt-3 block text-xs text-slate-500">Description</label>
-                <textarea id="edit-desc" class="mt-1 h-36 w-full rounded-md border border-slate-300 p-2 text-sm"></textarea>
-                <div class="mt-3 flex gap-2">
-                  <button class="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white" id="save-task">Save task</button>
-                  <button class="rounded-md bg-slate-200 px-3 py-2 text-xs font-semibold text-slate-700" id="new-task">New task</button>
+            <div class="panel-grid">
+              <div class="stack">
+                <div class="panel-header">Task List <span class="led"></span></div>
+                <div id="task-list" class="task-list"></div>
+                <div class="action-grid">
+                  <button class="btn btn-primary" id="action-merge">Merge</button>
+                  <button class="btn btn-secondary" id="action-split">Split</button>
+                  <button class="btn btn-secondary" id="action-longer">Make longer</button>
+                  <button class="btn btn-secondary" id="action-shorter">Make shorter</button>
+                  <button class="btn btn-secondary" id="action-improve">Improve text</button>
+                  <button class="btn btn-danger" id="action-remove">Remove</button>
+                </div>
+              </div>
+
+              <div class="stack">
+                <div class="panel-header">Editor <span class="led"></span></div>
+                <div class="editor-card">
+                  <label>Title</label>
+                  <input id="edit-intent" class="input" />
+                  <label>Time (hours)</label>
+                  <input id="edit-hours" type="number" min="0" class="input" />
+                  <label>Status</label>
+                  <select id="edit-status" class="select">
+                    <option value="done">done</option>
+                    <option value="inprogress">inprogress</option>
+                    <option value="onhold">onhold</option>
+                  </select>
+                  <label>Description</label>
+                  <textarea id="edit-desc" class="textarea"></textarea>
+                  <div class="editor-actions">
+                    <button class="btn btn-primary" id="save-task">Save task</button>
+                    <button class="btn btn-secondary" id="new-task">New task</button>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">Tasks (Preview)</div>
-          <div id="tasks" class="max-h-80 overflow-auto text-sm text-slate-700"></div>
-        </div>
-      </section>
+          <div class="panel" style="--delay: 0.12s">
+            <div class="panel-header">Tasks (Preview) <span class="led"></span></div>
+            <div id="tasks" class="preview-body"></div>
+          </div>
+        </section>
 
-      <section class="lg:col-span-4 space-y-6">
-        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">Rendered Preview</div>
-          <div id="preview" class="prose max-w-none max-h-[720px] overflow-auto"></div>
-        </div>
-      </section>
-    </div>
-  </main>
+        <section class="stack">
+          <div class="panel" style="--delay: 0.18s">
+            <div class="panel-header">Rendered Preview <span class="led"></span></div>
+            <div id="preview" class="preview-body"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
 
   <script>
     const state = { editingDate: false, selected: new Set(), tasks: [], activeIndex: null };
 
     function escapeHtml(str) {
-      return str.replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+      return str.replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[s]));
     }
 
     function renderStages(stages) {
@@ -495,17 +1063,20 @@ const indexHTML = `<!doctype html>
       el.innerHTML = '';
       stages.forEach((s, i) => {
         const li = document.createElement('li');
-        let icon = '*';
-        if (s.status === 'running') icon = '>';
-        if (s.status === 'done') icon = 'v';
-        li.textContent = icon + " " + (i + 1) + ". " + s.name + (s.note ? " - " + s.note : "") + (s.duration ? " (" + s.duration + ")" : "");
+        li.className = "stage-item stage-" + (s.status || 'pending');
+        const dot = document.createElement('span');
+        dot.className = "stage-dot";
+        const text = document.createElement('span');
+        text.textContent = (i + 1) + ". " + s.name + (s.note ? " - " + s.note : "") + (s.duration ? " (" + s.duration + ")" : "");
+        li.appendChild(dot);
+        li.appendChild(text);
         el.appendChild(li);
       });
     }
 
     function renderLogs(lines) {
       const el = document.getElementById('logs');
-      el.textContent = lines.join('\\n');
+      el.textContent = lines.join('\n');
       el.scrollTop = el.scrollHeight;
     }
 
@@ -513,26 +1084,27 @@ const indexHTML = `<!doctype html>
       const el = document.getElementById('task-list');
       el.innerHTML = '';
       if (!tasks || tasks.length === 0) {
-        el.innerHTML = '<div class="text-xs text-slate-500">(empty)</div>';
+        el.innerHTML = '<div class="task-meta">(empty)</div>';
         return;
       }
       tasks.forEach((t, i) => {
         const wrap = document.createElement('div');
-        wrap.className = "flex items-start gap-2 rounded-md border border-slate-200 p-2 text-xs";
+        wrap.className = "task-row" + (state.activeIndex === i ? " active" : "");
         const cb = document.createElement('input');
         cb.type = 'checkbox';
+        cb.className = 'checkbox';
         cb.checked = state.selected.has(i);
         cb.addEventListener('change', () => {
           if (cb.checked) state.selected.add(i); else state.selected.delete(i);
         });
         const body = document.createElement('div');
-        body.className = "flex-1 cursor-pointer";
+        body.className = "flex-1";
         body.addEventListener('click', () => selectActive(i));
         const title = document.createElement('div');
-        title.className = "text-sm font-semibold";
+        title.className = "task-title";
         title.textContent = t.task_intent || '(no intent)';
         const meta = document.createElement('div');
-        meta.className = "text-xs text-slate-500";
+        meta.className = "task-meta";
         meta.textContent = (t.status || 'done') + (t.estimated_hours ? " - " + t.estimated_hours + "h" : "");
         body.appendChild(title);
         body.appendChild(meta);
@@ -548,19 +1120,21 @@ const indexHTML = `<!doctype html>
         el.innerHTML = '<em>(empty)</em>';
         return;
       }
-      let html = '<ul class="space-y-3">';
+      let html = '<div class="task-preview-list">';
       tasks.forEach(t => {
         const intent = t.task_intent || '(no intent)';
         const scope = t.scope ? ' [' + t.scope + ']' : '';
         const hours = t.estimated_hours ? ' - ' + t.estimated_hours + 'h' : '';
         const type = t.task_type ? ' (' + t.task_type + ')' : '';
         const status = t.status ? ' [' + t.status + ']' : '';
-        html += '<li class="rounded-lg border border-slate-200 p-3">';
-        html += '<div class="text-sm font-semibold text-slate-900">' + escapeHtml(intent) + '<span class="text-xs text-slate-500">' + escapeHtml(scope + type + hours + status) + '</span></div>';
+        const statusClass = t.status ? ' status-' + t.status : '';
+        html += '<div class="task-preview-item">';
+        html += '<div class="task-preview-header"><span>' + escapeHtml(intent) + '</span><span class="chip' + statusClass + '">' + escapeHtml(t.status || 'done') + '</span></div>';
+        html += '<div class="task-preview-meta">' + escapeHtml(scope + type + hours + status) + '</div>';
         if (t.technical_why) {
-          const lines = String(t.technical_why).split('\\n').filter(Boolean);
+          const lines = String(t.technical_why).split('\n').filter(Boolean);
           if (lines.length) {
-            html += '<ul class="mt-2 list-disc pl-5 text-xs text-slate-700">';
+            html += '<ul class="task-preview-meta" style="margin-top: 8px; padding-left: 18px;">';
             lines.forEach(l => {
               html += '<li>' + escapeHtml(l) + '</li>';
             });
@@ -568,11 +1142,11 @@ const indexHTML = `<!doctype html>
           }
         }
         if (t.commits && t.commits.length) {
-          html += '<div class="mt-2 text-xs text-slate-500">commits: ' + escapeHtml(t.commits.join(', ')) + '</div>';
+          html += '<div class="task-preview-meta" style="margin-top: 8px;">commits: ' + escapeHtml(t.commits.join(', ')) + '</div>';
         }
-        html += '</li>';
+        html += '</div>';
       });
-      html += '</ul>';
+      html += '</div>';
       el.innerHTML = html;
     }
 
@@ -584,6 +1158,7 @@ const indexHTML = `<!doctype html>
       document.getElementById('edit-hours').value = t.estimated_hours || '';
       document.getElementById('edit-status').value = t.status || 'done';
       document.getElementById('edit-desc').value = t.technical_why || '';
+      renderTaskList(state.tasks);
     }
 
     async function loadState() {
