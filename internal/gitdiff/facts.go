@@ -20,17 +20,26 @@ func sh(cmd string) (string, error) {
 }
 
 type Output struct {
-	Date    string           `json:"date"`
-	Author  string           `json:"author"`
-	Extra   string           `json:"extra_context,omitempty"`
-	Changes []SemanticChange `json:"changes"`
-	Commits []Commit         `json:"raw_commits,omitempty"`
+	RepoName string           `json:"repo_name"`
+	Date     string           `json:"date"`
+	Author   string           `json:"author"`
+	Extra    string           `json:"extra_context,omitempty"`
+	Changes  []SemanticChange `json:"changes"`
+	Commits  []Commit         `json:"raw_commits,omitempty"`
+}
+
+func GetRepoName() string {
+	repo, _ := sh(`basename $(git rev-parse --show-toplevel 2>/dev/null) 2>/dev/null`)
+	if repo == "" {
+		return "unknown"
+	}
+	return repo
 }
 
 func GenerateFacts(date string, extra string) (*Output, error) {
 	// 1. Get user and repo info
 	author, _ := sh(`git config user.name`)
-	// repo, _ := sh(`git remote get-url origin | sed -E 's/.*\/([^/]+)\.git$/\1/'`) // Unused in JSON output for now
+	repo := GetRepoName()
 
 	raw, err := sh(fmt.Sprintf(`
 git log --author="%s" \
@@ -60,11 +69,12 @@ git log --author="%s" \
 
 	// 4. Return Output
 	out := &Output{
-		Date:    date,
-		Author:  author,
-		Extra:   extra,
-		Changes: allChanges,
-		Commits: commits,
+		RepoName: repo,
+		Date:     date,
+		Author:   author,
+		Extra:    extra,
+		Changes:  allChanges,
+		Commits:  commits,
 	}
 
 	return out, nil

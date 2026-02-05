@@ -67,13 +67,13 @@ func ExtractCommitIntent(change gitdiff.SemanticChange, commitMsg string, option
 	return &out, err
 }
 
-func SynthesizeTasks(commits []gitdiff.CommitChange, extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
+func SynthesizeTasks(commits []gitdiff.CommitChange, previousTasks []gitdiff.TaskChange, extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
 	system := readPromptFile("task_synthesizer.txt")
 	if system == "" {
 		return nil, errors.New("prompt file task_synthesizer.txt not found")
 	}
 
-	prompt := fmt.Sprintf("Extra Context: %s\nCommits: %v", extraContext, commits)
+	prompt := fmt.Sprintf("Extra Context: %s\nPrevious Tasks: %v\nCommits: %v", extraContext, previousTasks, commits)
 
 	var out []gitdiff.TaskChange
 	err := callJSON(prompt, system, options, &out)

@@ -4,6 +4,7 @@ Never output a single object, always wrap in [].
 Responsibility: "Are these commits part of the same delivery?"
 Use the provided extra_context to group commits into logical tasks.
 Focus on semantic deliverables for a status report.
+Continuity: Review the "Previous Tasks" provided. If some current commits are clear continuations or refinements of tasks mentioned in the previous report, group them under the same or similar task names to show progress.
 No speculation: only state what is supported by commit intents/signals/extra_context.
 Write task_intent as a short deliverable title (5-10 words).
 Write technical_why as 2-4 short lines (no leading dash), each describing a concrete change or outcome.
