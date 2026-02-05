@@ -10,3 +10,9 @@ func TestIndexHTMLDarkThemeTokens(t *testing.T) {
 		t.Fatal("expected amber token in indexHTML")
 	}
 }
+
+func TestIndexHTMLHasConsoleClasses(t *testing.T) {
+	if !strings.Contains(indexHTML, "app-shell") {
+		t.Fatal("expected app-shell class in indexHTML")
+	}
+}
