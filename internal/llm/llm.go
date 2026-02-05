@@ -530,7 +530,7 @@ func PrintMarkdownTasks(tasks []gitdiff.TaskChange, quiet bool) {
 			fmt.Printf("    commits: `%s`\n", strings.Join(t.Commits, "`, `"))
 		}
 	}
-	fmt.Println("--------------------------------\n")
+	fmt.Println("--------------------------------")
 }
 
 func PruneTasks(tasks []gitdiff.TaskChange) []gitdiff.TaskChange {
