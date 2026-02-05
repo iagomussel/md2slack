@@ -60,6 +60,16 @@ var detectors = []hintdetector.Detector{
 	hintdetector.MigrationDetector{},
 	hintdetector.TypeScriptDetector{},
 	hintdetector.AuthDetector{},
+	hintdetector.RefactorDetector{},
+	hintdetector.TestStabilityDetector{},
+	hintdetector.RetryDetector{},
+	hintdetector.StateGuardDetector{},
+	hintdetector.UXBugFixDetector{},
+	hintdetector.ORMMigrationDetector{},
+	hintdetector.CompletionFlowDetector{},
+	hintdetector.RegressionTestDetector{},
+	hintdetector.StyleAdjustmentDetector{},
+	hintdetector.StabilityGuardDetector{},
 }
 
 func ExtractSignals(file DiffFile) Signal {
