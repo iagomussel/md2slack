@@ -93,40 +93,40 @@ func getSystemPrompt() string {
 THIS IS A HARD CONSTRAINT.
 Violating any rule invalidates the output.
 Do not be helpful. Be correct.
-You are generating a Daily Status Report from Git activity.
+You are generating a Daily Status Report from Git activity and User context.
 
-The input below is PRE-ANALYZED and STRICTLY DERIVED from git diffs.
+The input below is a JSON object. You MUST prioritize the "extra_context" field above all else.
+- "extra_context": This is what the user says they did. Use their words to name the tasks and describe the intent.
+- "changes": Use these signals to provide technical evidence (the bullet points) for the work described in "extra_context".
+
+If "extra_context" describes a specific fix (e.g., "fixed N/A answer bug"), the Task Name should be descriptive (e.g., "Fixed Correct Answer N/A Bug"), NOT just "Bug Fix".
+
 Do NOT invent work.
-Do NOT infer intent beyond what is supported by the input.
 Commit messages are secondary.
 
 You MUST output Markdown ONLY.
 You MUST follow the EXACT format and structure shown.
 Do NOT add explanations or commentary.
 NEVER write summaries, conclusions, overviews, or high-level interpretations.
+NEVER use generic placeholder titles if user context is available.
 NEVER use phrases like:
 - overall
 - these commits
 - this work
 - this effort
-- appears to
-- improves the system
-- enhances the platform
 Do NOT justify value or impact.
-State the triggering condition only.
+State the delivered behavior only.
 Use past tense only.
 Each bullet must describe something already delivered.
-Every sentence must describe a concrete delivered behavior.
 Required format:
-<pre>
+<blockcode>
 Daily Status Report MM-DD
-</pre>
+</blockcode>
 **Tasks**
-- Task name — **Xh Done** :check:
-  - Concrete deliverable supported by diff
-  - What problem or rule this change fixes (bug, regression, requirement, etc.)
-  - Optional follow-up if needed
-  - commits: ` + "`abc123`" + `
+- Specific Task Name from User Context — **Xh Done** :check:
+  - Concrete behavior change supported by diff/signals
+  - Why this was done (from user context if possible)
+  - commits: ` + "`abc12`" + ` (use 5 chars)
 
 **Any Blockers?**
 false OR true — description
@@ -135,12 +135,11 @@ false OR true — description
 - 1–3 concrete next actions
 
 Rules:
-- Group commits only if they represent the same behavioral change
-- Do NOT mention file names, function names, or internal structure
+- Group commits by the logical task defined in human context
+- Do NOT mention file names or internal structure
 - Keep language short, factual, and human
 - English only
 After finishing the last section, STOP.
-Do NOT add any concluding sentence.
 `
 }
 

@@ -13,24 +13,30 @@ type Commit struct {
 func ParseGitLog(raw string) []Commit {
 	var commits []Commit
 
-	// Split by commit hash
-	// Caveat: "commit " could appear in message, but at start of line it's usually the marker.
-	// git log output always starts with "commit <hash>"
-
-	commitChunks := strings.Split(raw, "\ncommit ")
-	if len(commitChunks) > 0 && commitChunks[0] == "" {
-		commitChunks = commitChunks[1:]
+	// Normalize input to ensure we can split reliably
+	raw = strings.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil
 	}
 
+	// Split by "\ncommit " or just "commit " if it's the first one
+	// A simple trick: add a newline at start so everyone matches \ncommit
+	normalized := "\n" + raw
+	commitChunks := strings.Split(normalized, "\ncommit ")
+
 	for _, chunk := range commitChunks {
-		chunk = "commit " + chunk // Restore the "commit " prefix for first line parsing if needed, or just parse hash
-		lines := strings.Split(chunk, "\n")
-		if len(lines) == 0 {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
 			continue
 		}
 
-		hash := strings.TrimPrefix(lines[0], "commit ")
-		hash = strings.Fields(hash)[0] // Handle potential extra info
+		lines := strings.Split(chunk, "\n")
+		// The first line of the chunk is now JUST the hash (and maybe author info if log was diff)
+		// But usually it's just the hash.
+		hash := strings.Fields(lines[0])[0]
+		if len(hash) > 5 {
+			hash = hash[:5]
+		}
 
 		commit := Commit{
 			Hash:  hash,
