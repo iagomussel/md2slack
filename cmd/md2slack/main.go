@@ -6,6 +6,7 @@ import (
 	"md2slack/internal/config"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm"
+	"md2slack/internal/slack"
 	"md2slack/internal/storage"
 	"md2slack/internal/webui"
 	"net"
@@ -102,6 +103,25 @@ func main() {
 		StageNames: stageNames,
 	}
 
+	// Initialize handlers immediately so saving works even if we just load history
+	webServer.SetHandlers(
+		func(report string) error {
+			return slack.SendMarkdown(&cfg.Slack, report)
+		},
+		func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
+			return llm.RefineTasksWithPrompt(tasks, prompt, processor.LLMOpts)
+		},
+		func(repo string, date string, tasks []gitdiff.TaskChange, report string) error {
+			if repo == "" {
+				repo = "unknown"
+			}
+			if err := storage.ReplaceTasks(repo, date, tasks); err != nil {
+				return err
+			}
+			return storage.SaveHistory(repo, date, report)
+		},
+	)
+
 	if len(dates) == 0 {
 		// Register load/clear handlers immediately so they're available before any analysis runs
 		webServer.SetLoadClearHandlers(
@@ -114,7 +134,12 @@ func main() {
 				if hist == nil {
 					return nil, "", nil
 				}
-				return hist.Tasks, hist.Report, nil
+				tasks, err := storage.LoadTasks(repoName, date)
+				if err != nil {
+					// Fallback to empty if load fails? Or just return error?
+					tasks = nil
+				}
+				return tasks, hist.Report, nil
 			},
 			func(repo string, date string) error {
 				repoName := gitdiff.GetRepoNameAt(repo)
@@ -148,6 +173,7 @@ func main() {
 				opts.OnToolStart = callbacks.OnToolStart
 				opts.OnToolEnd = callbacks.OnToolEnd
 				opts.OnStreamChunk = callbacks.OnStreamChunk
+				// opts.RepoName and Date are not strictly needed for in-memory tools
 
 				updated, text, err := llm.StreamChatWithRequests(llmHistory, tasks, opts, nil)
 				return updated, text, err

@@ -101,19 +101,26 @@ func (c *CommitChange) UnmarshalJSON(data []byte) error {
 
 // Pipeline Stage 2 Output
 type TaskChange struct {
+	ID             string   `json:"id"`
+	RepoName       string   `json:"repo_name"`
+	Date           string   `json:"date"`
+	Usernames      []string `json:"usernames"`
 	TaskType       string   `json:"task_type"`
-	TaskIntent     string   `json:"task_intent"`             // Primary description used in UI if Title empty
-	Title          string   `json:"title,omitempty"`         // User-friendly title
-	Description    string   `json:"description,omitempty"`   // Detailed description
-	TimeEstimate   string   `json:"time_estimate,omitempty"` // String estimate like "2h"
+	TaskIntent     string   `json:"task_intent"`
 	Scope          string   `json:"scope"`
 	Commits        []string `json:"commits"`
 	Confidence     float64  `json:"confidence"`
-	EstimatedHours *int     `json:"estimated_hours,omitempty"`
-	TechnicalWhy   string   `json:"technical_why,omitempty"`
-	Status         string   `json:"status,omitempty"`
-	IsHistorical   bool     `json:"is_historical,omitempty"`
-	IsManual       bool     `json:"is_manual,omitempty"`
+	EstimatedHours float64  `json:"estimated_hours"` // User used int in example, but standardizing on float/int logic. Let's use float64 for generic or int. User showed 2.
+	TechnicalWhy   string   `json:"technical_why"`
+	Status         string   `json:"status"`
+
+	// Deprecated / Internal / Compatibility fields
+	TaskID       int    `json:"task_id,omitempty"` // Keep for now if needed internally, but mapped to ID
+	Title        string `json:"title,omitempty"`
+	Description  string `json:"description,omitempty"`
+	TimeEstimate string `json:"time_estimate,omitempty"`
+	IsHistorical bool   `json:"is_historical,omitempty"`
+	IsManual     bool   `json:"is_manual,omitempty"`
 
 	// Helper methods
 	Intent string `json:"intent,omitempty"` // Alias for TaskIntent for legacy compatibility
@@ -121,6 +128,10 @@ type TaskChange struct {
 
 func (t *TaskChange) UnmarshalJSON(data []byte) error {
 	type rawTaskChange struct {
+		ID             interface{} `json:"id"`
+		RepoName       interface{} `json:"repo_name"`
+		Date           interface{} `json:"date"`
+		Usernames      interface{} `json:"usernames"`
 		TaskType       interface{} `json:"task_type"`
 		TaskIntent     interface{} `json:"task_intent"`
 		Scope          interface{} `json:"scope"`
@@ -129,6 +140,12 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 		EstimatedHours interface{} `json:"estimated_hours"`
 		TechnicalWhy   interface{} `json:"technical_why"`
 		Status         interface{} `json:"status"`
+
+		// Legacy
+		TaskID       interface{} `json:"task_id"`
+		Title        interface{} `json:"title"`
+		Description  interface{} `json:"description"`
+		TimeEstimate interface{} `json:"time_estimate"`
 	}
 
 	var raw rawTaskChange
@@ -136,19 +153,22 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	t.ID = castString(raw.ID)
+	t.RepoName = castString(raw.RepoName)
+	t.Date = castString(raw.Date)
+	t.Usernames = castStringSlice(raw.Usernames)
 	t.TaskType = castString(raw.TaskType)
 	t.TaskIntent = castString(raw.TaskIntent)
 	t.Scope = castString(raw.Scope)
+	t.Commits = castStringSlice(raw.Commits)
 	if raw.Confidence != nil {
 		t.Confidence = *raw.Confidence
 	}
 
-	t.Commits = castStringSlice(raw.Commits)
-
-	if raw.EstimatedHours != nil {
-		if val, ok := castInt(raw.EstimatedHours); ok {
-			t.EstimatedHours = &val
-		}
+	if val, ok := castInt(raw.EstimatedHours); ok {
+		t.EstimatedHours = float64(val)
+	} else if val, ok := raw.EstimatedHours.(float64); ok {
+		t.EstimatedHours = val
 	}
 
 	switch v := raw.TechnicalWhy.(type) {
@@ -164,6 +184,20 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 		t.TechnicalWhy = strings.Join(lines, "\n")
 	}
 	t.Status = strings.ToLower(strings.TrimSpace(castString(raw.Status)))
+
+	// Legacy mapping
+	if raw.TaskID != nil {
+		if val, ok := castInt(raw.TaskID); ok {
+			t.TaskID = val
+		}
+	}
+	if t.ID == "" && t.TaskID != 0 {
+		t.ID = strconv.Itoa(t.TaskID)
+	}
+
+	t.Title = castString(raw.Title)
+	t.Description = castString(raw.Description)
+	t.TimeEstimate = castString(raw.TimeEstimate)
 
 	return nil
 }

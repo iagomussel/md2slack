@@ -53,8 +53,8 @@ func RenderReport(date string, groups []gitdiff.GroupedTask, allTasks []gitdiff.
 
 func renderTask(t gitdiff.TaskChange) string {
 	hours := 1
-	if t.EstimatedHours != nil && *t.EstimatedHours > 0 {
-		hours = *t.EstimatedHours
+	if t.EstimatedHours > 0 {
+		hours = int(t.EstimatedHours)
 	}
 
 	intent := t.TaskIntent

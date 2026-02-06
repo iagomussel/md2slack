@@ -3,7 +3,6 @@ package storage
 import (
 	"database/sql"
 	"encoding/json"
-	"md2slack/internal/gitdiff"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,12 +23,20 @@ func initDB() error {
 			err = derr
 			return
 		}
-		dir := filepath.Join(home, ".md2slack")
-		if derr := os.MkdirAll(dir, 0755); derr != nil {
-			err = derr
-			return
+		dbPath := os.Getenv("MD2SLACK_DB_PATH")
+		if dbPath == "" {
+			dir := filepath.Join(home, ".md2slack")
+			if derr := os.MkdirAll(dir, 0755); derr != nil {
+				err = derr
+				return
+			}
+			dbPath = filepath.Join(dir, "md2slack.db")
+		} else {
+			if derr := os.MkdirAll(filepath.Dir(dbPath), 0755); derr != nil {
+				err = derr
+				return
+			}
 		}
-		dbPath := filepath.Join(dir, "md2slack.db")
 		db, err = sql.Open("sqlite", dbPath)
 		if err != nil {
 			return
@@ -45,21 +52,41 @@ func initDB() error {
 			UNIQUE(repo_name, date)
 		);`
 		_, err = db.Exec(schema)
+		if err != nil {
+			return
+		}
+		taskSchema := `
+		CREATE TABLE IF NOT EXISTS tasks (
+			id TEXT PRIMARY KEY,
+			repo_name TEXT NOT NULL,
+			date TEXT NOT NULL,
+			task_json TEXT NOT NULL,
+			created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_tasks_repo_date ON tasks(repo_name, date);`
+		_, err = db.Exec(taskSchema)
 	})
 	return err
 }
 
-func SaveHistoryDB(repoName string, date string, tasks []gitdiff.TaskChange, groups []gitdiff.GroupedTask, summaries []gitdiff.CommitSummary, report string) error {
+// ResetForTest clears the db connection and init guard (for tests only).
+func ResetForTest() {
+	if db != nil {
+		_ = db.Close()
+	}
+	db = nil
+	dbOnce = sync.Once{}
+}
+
+func SaveHistoryDB(repoName string, date string, report string) error {
 	if err := initDB(); err != nil {
 		return err
 	}
 
 	record := HistoryRecord{
-		Date:      date,
-		Tasks:     tasks,
-		Groups:    groups,
-		Summaries: summaries,
-		Report:    report,
+		Date:   date,
+		Report: report,
 	}
 
 	data, err := json.Marshal(record)

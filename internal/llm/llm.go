@@ -28,6 +28,8 @@ type LLMOptions struct {
 	ModelName     string
 	BaseUrl       string
 	Token         string
+	RepoName      string
+	Date          string
 	Quiet         bool
 	OnToolLog     func(string)
 	OnToolStatus  func(string)
@@ -771,7 +773,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				newTask.TaskType = "delivery"
 			}
 			if h, ok := castInt(params["estimated_hours"]); ok {
-				newTask.EstimatedHours = &h
+				newTask.EstimatedHours = float64(h)
 			}
 			tasks = append(tasks, newTask)
 			logs = append(logs, fmt.Sprintf("Success: created task with index %d", len(tasks)-1))
@@ -790,7 +792,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				tasks[idx].Scope = scope
 			}
 			if h, ok := castInt(params["estimated_hours"]); ok {
-				tasks[idx].EstimatedHours = &h
+				tasks[idx].EstimatedHours = float64(h)
 			}
 			logs = append(logs, fmt.Sprintf("Success: edited task %d", idx))
 			status = fmt.Sprintf("Edited task #%d", idx)
@@ -821,11 +823,11 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				continue
 			}
 			if h, ok := castInt(params["hours"]); ok {
-				if tasks[idx].EstimatedHours == nil {
-					tasks[idx].EstimatedHours = &h
+				if tasks[idx].EstimatedHours <= 0 {
+					tasks[idx].EstimatedHours = float64(h)
 				} else {
-					newH := *tasks[idx].EstimatedHours + h
-					tasks[idx].EstimatedHours = &newH
+					newH := tasks[idx].EstimatedHours + float64(h)
+					tasks[idx].EstimatedHours = newH
 				}
 				logs = append(logs, fmt.Sprintf("Success: added %d hours to task %d", h, idx))
 				status = fmt.Sprintf("Updated time for task #%d", idx)
@@ -910,8 +912,8 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				idxMap[idx] = true
 				t := tasks[idx]
 				mergedCommits = append(mergedCommits, t.Commits...)
-				if t.EstimatedHours != nil {
-					mergedHours += *t.EstimatedHours
+				if t.EstimatedHours > 0 {
+					mergedHours += int(t.EstimatedHours)
 				}
 				if t.TechnicalWhy != "" {
 					mergedDetails = append(mergedDetails, t.TechnicalWhy)
@@ -936,7 +938,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				Scope:          newScope,
 				TaskType:       mergedType,
 				Commits:        finalCommits,
-				EstimatedHours: &mergedHours,
+				EstimatedHours: float64(mergedHours),
 				TechnicalWhy:   strings.Join(mergedDetails, "\n---\n"),
 			}
 
@@ -976,7 +978,7 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 					Commits:      castStringSlice(m["commits"]),
 				}
 				if h, ok := castInt(m["estimated_hours"]); ok {
-					nt.EstimatedHours = &h
+					nt.EstimatedHours = float64(h)
 				}
 				newlyCreated = append(newlyCreated, nt)
 			}

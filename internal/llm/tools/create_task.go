@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"md2slack/internal/gitdiff"
+	"md2slack/internal/storage"
 )
 
 // CreateTaskTool implements the tools.Tool interface for creating tasks
 type CreateTaskTool struct {
-	Tasks []gitdiff.TaskChange
+	RepoName string
+	Date     string
+	Tasks    []gitdiff.TaskChange
 }
 
 func (t *CreateTaskTool) Name() string {
@@ -50,13 +53,20 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 		TaskIntent:   params.Intent,
 		Commits:      params.Commits,
 	}
+	if newTask.TaskType == "" {
+		newTask.TaskType = "delivery"
+	}
 
-	t.Tasks = append(t.Tasks, newTask)
+	id, updated, err := storage.CreateTask(t.RepoName, t.Date, newTask)
+	if err != nil {
+		return "", err
+	}
+	t.Tasks = updated
 
 	result := map[string]interface{}{
-		"status":     "created",
-		"task_index": len(t.Tasks) - 1,
-		"task":       newTask,
+		"status":  "created",
+		"task_id": id,
+		"task":    updated[len(updated)-1],
 	}
 
 	resultJSON, _ := json.Marshal(result)

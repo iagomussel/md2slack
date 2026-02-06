@@ -14,16 +14,15 @@ type TaskTools struct {
 	// TODO: Add SplitTask, MergeTasks, SearchCodebase, etc.
 }
 
-// NewTaskTools creates a new set of task manipulation tools initialized with the current tasks
-func NewTaskTools(currentTasks []gitdiff.TaskChange) *TaskTools {
-	// Make a copy of tasks for each tool to work with
+// NewTaskTools creates a new set of task manipulation tools initialized with repo/date context
+func NewTaskTools(repoName string, date string, currentTasks []gitdiff.TaskChange) *TaskTools {
 	tasksCopy := make([]gitdiff.TaskChange, len(currentTasks))
 	copy(tasksCopy, currentTasks)
 
 	return &TaskTools{
-		CreateTask: &CreateTaskTool{Tasks: tasksCopy},
-		UpdateTask: &UpdateTaskTool{Tasks: tasksCopy},
-		DeleteTask: &DeleteTaskTool{Tasks: tasksCopy},
+		CreateTask: &CreateTaskTool{RepoName: repoName, Date: date, Tasks: tasksCopy},
+		UpdateTask: &UpdateTaskTool{RepoName: repoName, Date: date, Tasks: tasksCopy},
+		DeleteTask: &DeleteTaskTool{RepoName: repoName, Date: date, Tasks: tasksCopy},
 	}
 }
 

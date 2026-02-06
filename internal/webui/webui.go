@@ -18,6 +18,7 @@ import (
 
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/renderer"
+	"md2slack/internal/storage"
 )
 
 //go:embed all:dist
@@ -81,7 +82,7 @@ type Server struct {
 	runCh               chan RunRequest
 	onSend              func(report string) error
 	onRefine            func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onSave              func(date string, tasks []gitdiff.TaskChange, report string) error
+	onSave              func(repo string, date string, tasks []gitdiff.TaskChange, report string) error
 	onAction            func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
 	onChatWithCallbacks func(history []OpenAIMessage, tasks []gitdiff.TaskChange, callbacks ChatCallbacks) ([]gitdiff.TaskChange, string, error)
 	onUpdateTask        func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
@@ -102,7 +103,7 @@ func Start(addr string, stageNames []string) *Server {
 	return s
 }
 
-func (s *Server) SetHandlers(onSend func(string) error, onRefine func(string, []gitdiff.TaskChange) ([]gitdiff.TaskChange, error), onSave func(string, []gitdiff.TaskChange, string) error) {
+func (s *Server) SetHandlers(onSend func(string) error, onRefine func(string, []gitdiff.TaskChange) ([]gitdiff.TaskChange, error), onSave func(string, string, []gitdiff.TaskChange, string) error) {
 	s.onSend = onSend
 	s.onRefine = onRefine
 	s.onSave = onSave
@@ -308,11 +309,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	nextActions := s.state.NextActions
 	date := s.state.Date
+	repo := s.state.Repo
 	s.mu.Unlock()
 
 	s.SetTasks(payload.Tasks, nextActions)
 	if s.onSave != nil {
-		_ = s.onSave(date, payload.Tasks, s.state.Report)
+		_ = s.onSave(repo, date, payload.Tasks, s.state.Report)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -337,6 +339,7 @@ func (s *Server) handleRefine(w http.ResponseWriter, r *http.Request) {
 	tasks := s.state.Tasks
 	nextActions := s.state.NextActions
 	date := s.state.Date
+	repo := s.state.Repo
 	s.mu.Unlock()
 
 	refined, err := s.onRefine(payload.Prompt, tasks)
@@ -346,7 +349,7 @@ func (s *Server) handleRefine(w http.ResponseWriter, r *http.Request) {
 	}
 	s.SetTasks(refined, nextActions)
 	if s.onSave != nil {
-		_ = s.onSave(date, refined, s.state.Report)
+		_ = s.onSave(repo, date, refined, s.state.Report)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -397,7 +400,9 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	tasks := s.state.Tasks
 	nextActions := s.state.NextActions
 	date := s.state.Date
+	repo := s.state.Repo
 	s.mu.Unlock()
+
 	for _, idx := range payload.Selected {
 		if idx < 0 || idx >= len(tasks) {
 			http.Error(w, "selected index out of range", http.StatusBadRequest)
@@ -412,7 +417,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 	s.SetTasks(updated, nextActions)
 	if s.onSave != nil {
-		_ = s.onSave(date, updated, s.state.Report)
+		_ = s.onSave(repo, date, updated, s.state.Report)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
@@ -573,36 +578,7 @@ func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"commits": commits})
 }
 
-func appendLog(list []string, line string, max int) []string {
-	if line == "" {
-		return list
-	}
-	list = append(list, line)
-	if len(list) > max {
-		list = list[len(list)-max:]
-	}
-	return list
-}
-
-func renderMarkdown(md string) string {
-	if strings.TrimSpace(md) == "" {
-		return "<em>(empty)</em>"
-	}
-	var buf bytes.Buffer
-	mdr := goldmark.New(goldmark.WithRendererOptions(
-		goldhtml.WithUnsafe(),
-	))
-	if err := mdr.Convert([]byte(md), &buf); err != nil {
-		return "<pre>" + html.EscapeString(md) + "</pre>"
-	}
-	return buf.String()
-}
-
 func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
-	if s.onLoadHistory == nil {
-		http.Error(w, "load history not configured", http.StatusBadRequest)
-		return
-	}
 	repo := r.URL.Query().Get("repo")
 	date := r.URL.Query().Get("date")
 	if repo == "" || date == "" {
@@ -610,11 +586,17 @@ func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasks, report, err := s.onLoadHistory(repo, date)
+	repoName := gitdiff.GetRepoNameAt(repo)
+	tasks, err := storage.LoadTasks(repoName, date)
 	if err != nil {
 		log.Printf("[handleLoadHistory] Error loading history for repo=%s, date=%s: %v", repo, date, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	report := ""
+	if hist, err := storage.LoadHistory(repoName, date); err == nil && hist != nil {
+		report = hist.Report
 	}
 
 	log.Printf("[handleLoadHistory] Loaded %d tasks for repo=%s, date=%s", len(tasks), repo, date)
@@ -622,7 +604,7 @@ func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.state.Tasks = tasks
 	s.state.Date = date
-	s.state.Repo = gitdiff.GetRepoNameAt(repo)
+	s.state.Repo = repoName
 	if report != "" {
 		s.state.Report = report
 		s.state.ReportHTML = renderMarkdown(report)
@@ -651,10 +633,6 @@ func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClearTasks(w http.ResponseWriter, r *http.Request) {
-	if s.onClearTasks == nil {
-		http.Error(w, "clear tasks not configured", http.StatusBadRequest)
-		return
-	}
 	repo := r.URL.Query().Get("repo")
 	date := r.URL.Query().Get("date")
 	if repo == "" || date == "" {
@@ -662,11 +640,12 @@ func (s *Server) handleClearTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.onClearTasks(repo, date)
-	if err != nil {
+	repoName := gitdiff.GetRepoNameAt(repo)
+	if err := storage.DeleteAllTasks(repoName, date); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = storage.DeleteHistoryDB(repoName, date)
 
 	s.mu.Lock()
 	s.state.Tasks = nil
@@ -680,4 +659,29 @@ func (s *Server) handleClearTasks(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func appendLog(list []string, line string, max int) []string {
+	if line == "" {
+		return list
+	}
+	list = append(list, line)
+	if len(list) > max {
+		list = list[len(list)-max:]
+	}
+	return list
+}
+
+func renderMarkdown(md string) string {
+	if strings.TrimSpace(md) == "" {
+		return "<em>(empty)</em>"
+	}
+	var buf bytes.Buffer
+	mdr := goldmark.New(goldmark.WithRendererOptions(
+		goldhtml.WithUnsafe(),
+	))
+	if err := mdr.Convert([]byte(md), &buf); err != nil {
+		return "<pre>" + html.EscapeString(md) + "</pre>"
+	}
+	return buf.String()
 }

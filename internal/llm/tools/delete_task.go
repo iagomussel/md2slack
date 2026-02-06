@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"md2slack/internal/gitdiff"
+	"md2slack/internal/storage"
 )
 
 // DeleteTaskTool implements the tools.Tool interface for deleting tasks
 type DeleteTaskTool struct {
-	Tasks []gitdiff.TaskChange
+	RepoName string
+	Date     string
+	Tasks    []gitdiff.TaskChange
 }
 
 func (t *DeleteTaskTool) Name() string {
@@ -26,46 +29,42 @@ Parameters (JSON):
 
 func (t *DeleteTaskTool) Call(ctx context.Context, input string) (string, error) {
 	var params struct {
-		Indices []int `json:"indices"`
+		Indices []int    `json:"indices,omitempty"`
+		TaskIDs []string `json:"task_ids,omitempty"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return "", fmt.Errorf("invalid parameters: %w", err)
 	}
 
-	if len(params.Indices) == 0 {
-		return "", fmt.Errorf("no indices provided")
+	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
+	if err != nil {
+		return "", err
 	}
 
-	// Validate all indices first
-	for _, idx := range params.Indices {
-		if idx < 0 || idx >= len(t.Tasks) {
-			return "", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(t.Tasks)-1)
-		}
-	}
-
-	// Sort indices in descending order to delete from end to start
-	sortedIndices := make([]int, len(params.Indices))
-	copy(sortedIndices, params.Indices)
-	for i := 0; i < len(sortedIndices); i++ {
-		for j := i + 1; j < len(sortedIndices); j++ {
-			if sortedIndices[i] < sortedIndices[j] {
-				sortedIndices[i], sortedIndices[j] = sortedIndices[j], sortedIndices[i]
+	taskIDs := append([]string{}, params.TaskIDs...)
+	if len(taskIDs) == 0 && len(params.Indices) > 0 {
+		for _, idx := range params.Indices {
+			if idx < 0 || idx >= len(tasks) {
+				return "", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
 			}
+			taskIDs = append(taskIDs, tasks[idx].ID)
 		}
 	}
-
-	// Delete from end to start to maintain indices
-	deleted := []gitdiff.TaskChange{}
-	for _, idx := range sortedIndices {
-		deleted = append(deleted, t.Tasks[idx])
-		t.Tasks = append(t.Tasks[:idx], t.Tasks[idx+1:]...)
+	if len(taskIDs) == 0 {
+		return "", fmt.Errorf("no task_ids or indices provided")
 	}
+
+	updated, err := storage.DeleteTasks(t.RepoName, t.Date, taskIDs)
+	if err != nil {
+		return "", err
+	}
+	t.Tasks = updated
 
 	result := map[string]interface{}{
-		"status":  "deleted",
-		"count":   len(deleted),
-		"deleted": deleted,
+		"status":   "deleted",
+		"count":    len(taskIDs),
+		"task_ids": taskIDs,
 	}
 
 	resultJSON, _ := json.Marshal(result)

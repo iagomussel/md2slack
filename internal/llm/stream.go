@@ -20,7 +20,7 @@ func StreamChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.Task
 	system = strings.Replace(system, "{{TASKS_JSON}}", string(tasksJSON), 1)
 
 	// Create Task tools
-	taskTools := tools.NewTaskTools(currentTasks)
+	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
 	agent := NewAgent(options, taskTools)
 
 	responseText, toolUsed, err := agent.StreamChat(history, system)

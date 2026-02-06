@@ -47,11 +47,16 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 		ui = p.WebServer
 
 		// Re-load previous session if it exists
+		// Re-load previous session if it exists
 		if hist, err := storage.LoadHistory(repoName, date); err == nil && hist != nil {
-			p.WebServer.SetTasks(hist.Tasks, nil)
 			if hist.Report != "" {
 				p.WebServer.SetReport(hist.Report)
 			}
+			// Load tasks separately
+			if tasks, err := storage.LoadTasks(repoName, date); err == nil {
+				p.WebServer.SetTasks(tasks, nil)
+			}
+
 			// Mark stages as done if we have a report (simple heuristic)
 			if hist.Report != "" {
 				for i := 0; i < len(p.StageNames); i++ {
@@ -234,6 +239,11 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 		ui.StageStart(5, "")
 	}
 	report := renderer.RenderReport(date, nil, allTasks, nextActions)
+	if err := storage.ReplaceTasks(repoName, date, allTasks); err != nil {
+		errf("Warning: failed to persist tasks for %s: %v", date, err)
+	} else if loaded, err := storage.LoadTasks(repoName, date); err == nil {
+		allTasks = loaded
+	}
 	if p.WebServer != nil {
 		p.WebServer.SetTasks(allTasks, nextActions)
 		p.WebServer.SetReport(report)
@@ -248,8 +258,11 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 			func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
 				return llm.RefineTasksWithPrompt(tasks, prompt, localLLMOpts)
 			},
-			func(date string, tasks []gitdiff.TaskChange, report string) error {
-				return storage.SaveHistory(repoName, date, tasks, nil, nil, report)
+			func(repo string, date string, tasks []gitdiff.TaskChange, report string) error {
+				if err := storage.ReplaceTasks(repo, date, tasks); err != nil {
+					return err
+				}
+				return storage.SaveHistory(repo, date, report)
 			},
 		)
 	}
@@ -266,7 +279,7 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 	fmt.Println(report)
 
 	// Save History
-	if err := storage.SaveHistory(repoName, date, allTasks, nil, nil, report); err != nil {
+	if err := storage.SaveHistory(repoName, date, report); err != nil {
 		errf("Warning: failed to save history for %s: %v", date, err)
 	}
 

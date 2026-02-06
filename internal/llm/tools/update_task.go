@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"md2slack/internal/gitdiff"
+	"md2slack/internal/storage"
 )
 
 // UpdateTaskTool implements the tools.Tool interface for updating tasks
 type UpdateTaskTool struct {
-	Tasks []gitdiff.TaskChange
+	RepoName string
+	Date     string
+	Tasks    []gitdiff.TaskChange
 }
 
 func (t *UpdateTaskTool) Name() string {
@@ -30,7 +33,8 @@ Parameters (JSON):
 
 func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error) {
 	var params struct {
-		Index        int     `json:"index"`
+		Index        *int    `json:"index,omitempty"`
+		TaskID       *string `json:"task_id,omitempty"`
 		Title        *string `json:"title,omitempty"`
 		Description  *string `json:"description,omitempty"`
 		TimeEstimate *string `json:"time_estimate,omitempty"`
@@ -41,11 +45,32 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 		return "", fmt.Errorf("invalid parameters: %w", err)
 	}
 
-	if params.Index < 0 || params.Index >= len(t.Tasks) {
-		return "", fmt.Errorf("index %d out of bounds (0-%d)", params.Index, len(t.Tasks)-1)
+	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
+	if err != nil {
+		return "", err
 	}
-
-	task := &t.Tasks[params.Index]
+	var taskID string
+	if params.TaskID != nil && *params.TaskID != "" {
+		taskID = *params.TaskID
+	} else if params.Index != nil {
+		idx := *params.Index
+		if idx < 0 || idx >= len(tasks) {
+			return "", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
+		}
+		taskID = tasks[idx].ID
+	} else {
+		return "", fmt.Errorf("task_id or index is required")
+	}
+	var task *gitdiff.TaskChange
+	for i := range tasks {
+		if tasks[i].ID == taskID {
+			task = &tasks[i]
+			break
+		}
+	}
+	if task == nil {
+		return "", fmt.Errorf("task_id %s not found", taskID)
+	}
 
 	if params.Title != nil {
 		task.Title = *params.Title
@@ -57,13 +82,19 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 		task.TimeEstimate = *params.TimeEstimate
 	}
 	if params.Intent != nil {
-		task.Intent = *params.Intent
+		task.TaskIntent = *params.Intent
 	}
 
+	updated, err := storage.UpdateTask(t.RepoName, t.Date, taskID, *task)
+	if err != nil {
+		return "", err
+	}
+	t.Tasks = updated
+
 	result := map[string]interface{}{
-		"status": "updated",
-		"index":  params.Index,
-		"task":   task,
+		"status":  "updated",
+		"task_id": taskID,
+		"task":    task,
 	}
 
 	resultJSON, _ := json.Marshal(result)

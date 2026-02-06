@@ -3,8 +3,10 @@ package webui
 import (
 	"encoding/json"
 	"log"
-	"md2slack/internal/gitdiff"
 	"net/http"
+
+	"md2slack/internal/gitdiff"
+	"md2slack/internal/storage"
 )
 
 type ChatRequest struct {
@@ -101,7 +103,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	s.SetTasks(updatedTasks, s.state.NextActions)
 	if s.onSave != nil {
-		_ = s.onSave(s.state.Date, updatedTasks, s.state.Report)
+		_ = s.onSave(s.state.Repo, s.state.Date, updatedTasks, s.state.Report)
 	}
 
 	// Send final response
@@ -132,12 +134,19 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	currentTasks := s.state.Tasks
 	s.mu.Unlock()
 
-	if s.onUpdateTask == nil {
-		http.Error(w, "update task handler not implemented", http.StatusNotImplemented)
+	if req.Index < 0 || req.Index >= len(currentTasks) {
+		http.Error(w, "index out of bounds", http.StatusBadRequest)
+		return
+	}
+	taskID := currentTasks[req.Index].ID
+	if taskID == "" {
+		http.Error(w, "task_id not available", http.StatusBadRequest)
 		return
 	}
 
-	updated, err := s.onUpdateTask(req.Index, req.Task, currentTasks)
+	repo := s.state.Repo
+	date := s.state.Date
+	updated, err := storage.UpdateTask(repo, date, taskID, req.Task)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -145,7 +154,7 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 
 	s.SetTasks(updated, s.state.NextActions)
 	if s.onSave != nil {
-		_ = s.onSave(s.state.Date, updated, s.state.Report)
+		_ = s.onSave(repo, s.state.Date, updated, s.state.Report)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
