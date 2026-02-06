@@ -17,7 +17,6 @@ func TestIndexHTMLHasConsoleClasses(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestIndexHTMLHasSlackPreviewClass(t *testing.T) {
 	if !strings.Contains(indexHTML, "slack-preview") {
 		t.Fatal("expected slack-preview class")
