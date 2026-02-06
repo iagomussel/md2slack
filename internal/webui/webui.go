@@ -83,7 +83,6 @@ type Server struct {
 	onRefine            func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
 	onSave              func(date string, tasks []gitdiff.TaskChange, report string) error
 	onAction            func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onChat              func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error)
 	onChatWithCallbacks func(history []OpenAIMessage, tasks []gitdiff.TaskChange, callbacks ChatCallbacks) ([]gitdiff.TaskChange, string, error)
 	onUpdateTask        func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
 	onLoadHistory       func(repo string, date string) ([]gitdiff.TaskChange, string, error)
@@ -111,11 +110,9 @@ func (s *Server) SetHandlers(onSend func(string) error, onRefine func(string, []
 
 func (s *Server) SetActionHandler(
 	onAction func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error),
-	onChat func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error),
 	onUpdateTask func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error),
 ) {
 	s.onAction = onAction
-	s.onChat = onChat
 	s.onUpdateTask = onUpdateTask
 }
 

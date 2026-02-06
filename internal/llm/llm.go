@@ -28,7 +28,6 @@ type LLMOptions struct {
 	ModelName     string
 	BaseUrl       string
 	Token         string
-	Debug         bool
 	Quiet         bool
 	OnToolLog     func(string)
 	OnToolStatus  func(string)
@@ -37,7 +36,6 @@ type LLMOptions struct {
 	OnToolStart   func(string, string) // Called when a tool starts: (toolName, toolID)
 	OnToolEnd     func(string, string) // Called when a tool ends: (toolName, result)
 	Timeout       time.Duration
-	Heartbeat     time.Duration
 }
 
 // OpenAIMessage is now shared with webui, but we keep it here for internal use.
@@ -1203,6 +1201,9 @@ func convertToLLMCMessages(messages []OpenAIMessage, system string) []llms.Messa
 		result = append(result, llms.TextParts(llms.ChatMessageTypeSystem, system))
 	}
 	for _, msg := range messages {
+		if strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
 		role := strings.ToLower(msg.Role)
 		switch role {
 		case "system":
@@ -1242,8 +1243,16 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 		return err
 	}
 
+	var streamBuf strings.Builder
 	callOpts := []llms.CallOption{
 		llms.WithRepetitionPenalty(options.RepeatPenalty),
+		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
+			streamBuf.Write(chunk)
+			if options.OnStreamChunk != nil {
+				options.OnStreamChunk(string(chunk))
+			}
+			return nil
+		}),
 	}
 
 	provider := strings.ToLower(options.Provider)
@@ -1285,6 +1294,9 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 	}
 
 	responseText := resp.Choices[0].Content
+	if responseText == "" && streamBuf.Len() > 0 {
+		responseText = streamBuf.String()
+	}
 	toolCalls := resp.Choices[0].ToolCalls
 
 	fmt.Printf("[callJSON] Response - Text length: %d, Tool calls: %d\n", len(responseText), len(toolCalls))

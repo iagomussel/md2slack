@@ -1,13 +1,14 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
 
 func TestGetAdapter(t *testing.T) {
 	opts := LLMOptions{Provider: "ollama", ModelName: "llama3.2"}
-	adapter, err := getAdapter(opts)
+	adapter, err := createLLM(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("failed to get adapter: %v", err)
 	}

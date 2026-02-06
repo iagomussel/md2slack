@@ -1,15 +1,12 @@
 package llm
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm/tools"
 	"strings"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 // StreamChatWithRequests handles streaming chat with tool calls
@@ -26,16 +23,69 @@ func StreamChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.Task
 	taskTools := tools.NewTaskTools(currentTasks)
 	agent := NewAgent(options, taskTools)
 
-	responseText, err := agent.StreamChat(history, system)
+	responseText, toolUsed, err := agent.StreamChat(history, system)
 	if err != nil {
 		return currentTasks, "", err
 	}
+	if toolUsed {
+		return taskTools.GetUpdatedTasks(), responseText, nil
+	}
 
-	return taskTools.GetUpdatedTasks(), responseText, nil
+	parsedTools := parseToolCallsFromText(responseText)
+	log.Printf("[llm.StreamChatWithRequests] toolUsed=false parsedTools=%d responseLen=%d response=%q",
+		len(parsedTools),
+		len(responseText),
+		truncateForLog(responseText, 200),
+	)
+	if len(parsedTools) == 0 {
+		forcedTools, forcedText, err := agent.ForceToolCalls(history, system)
+		if err != nil {
+			return taskTools.GetUpdatedTasks(), responseText, nil
+		}
+		log.Printf("[llm.StreamChatWithRequests] forcedTools=%d forcedLen=%d forced=%q",
+			len(forcedTools),
+			len(forcedText),
+			truncateForLog(forcedText, 200),
+		)
+		parsedTools = forcedTools
+		if len(parsedTools) == 0 {
+			return taskTools.GetUpdatedTasks(), responseText, nil
+		}
+	}
+
+	if options.OnToolStart != nil {
+		for _, tool := range parsedTools {
+			paramsJSON, _ := json.Marshal(tool.Parameters)
+			options.OnToolStart(tool.Tool, string(paramsJSON))
+		}
+	}
+
+	updatedTasks, log, status := ApplyTools(parsedTools, currentTasks, allowedCommits)
+
+	if options.OnToolEnd != nil {
+		resultData := map[string]interface{}{
+			"log":    log,
+			"status": status,
+		}
+		resultJSON, _ := json.Marshal(resultData)
+		for _, tool := range parsedTools {
+			options.OnToolEnd(tool.Tool, string(resultJSON))
+		}
+	}
+	emitToolUpdates(options, log, status)
+
+	if responseText == "" {
+		responseText = status
+	} else if status != "" {
+		responseText = fmt.Sprintf("%s\n\n(Action: %s)", responseText, status)
+	}
+
+	return updatedTasks, responseText, nil
 }
 
-// StreamAdapter wraps the LLM adapter to support streaming
-type StreamAdapter interface {
-	GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error)
-	StreamContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (io.Reader, error)
+func truncateForLog(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }

@@ -24,6 +24,14 @@
 	let projects = $state([]);
 	let settings = $state({ usernames: [], project_paths: [] });
 
+	function getTodayString() {
+		const d = new Date();
+		const yyyy = d.getFullYear();
+		const mm = String(d.getMonth() + 1).padStart(2, "0");
+		const dd = String(d.getDate()).padStart(2, "0");
+		return `${yyyy}-${mm}-${dd}`;
+	}
+
 	async function loadSettings() {
 		try {
 			const res = await fetch("/api/settings");
@@ -71,6 +79,9 @@
 	}
 
 	onMount(() => {
+		if (!date) {
+			date = getTodayString();
+		}
 		loadSettings();
 		loadState();
 		const interval = setInterval(loadState, 2000);

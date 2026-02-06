@@ -34,8 +34,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	currentTasks := s.state.Tasks
 	s.mu.Unlock()
 
-	if s.onChat == nil {
-		log.Printf("[handleChat] ERROR: onChat handler is nil")
+	if s.onChatWithCallbacks == nil {
+		log.Printf("[handleChat] ERROR: onChatWithCallbacks handler is nil")
 		http.Error(w, "chat handler not implemented", http.StatusNotImplemented)
 		return
 	}
@@ -63,6 +63,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Create streaming callbacks
 	callbacks := ChatCallbacks{
+		OnStreamChunk: func(text string) {
+			sendEvent("chunk", map[string]interface{}{
+				"text": text,
+			})
+		},
 		OnToolStart: func(toolName string, paramsJSON string) {
 			sendEvent("tool_start", map[string]interface{}{
 				"tool":   toolName,
@@ -83,14 +88,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var responseText string
 	var err error
 
-	// Use callbacks version if available
-	if s.onChatWithCallbacks != nil {
-		log.Printf("[handleChat] Using onChatWithCallbacks")
-		updatedTasks, responseText, err = s.onChatWithCallbacks(req.History, currentTasks, callbacks)
-	} else {
-		log.Printf("[handleChat] Using legacy onChat (no callbacks)")
-		updatedTasks, responseText, err = s.onChat(req.History, currentTasks)
-	}
+	log.Printf("[handleChat] Using onChatWithCallbacks")
+	updatedTasks, responseText, err = s.onChatWithCallbacks(req.History, currentTasks, callbacks)
 
 	if err != nil {
 		log.Printf("[handleChat] ERROR: chat handler returned error: %v", err)

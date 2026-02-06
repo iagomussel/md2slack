@@ -40,7 +40,7 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		return "", fmt.Errorf("invalid parameters: %w", err)
+		return "ERROR:invalid parameters: %w fix it and try again", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	newTask := gitdiff.TaskChange{

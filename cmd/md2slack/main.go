@@ -95,9 +95,7 @@ func main() {
 			ContextSize:   cfg.LLM.ContextSize,
 			BaseUrl:       cfg.LLM.BaseURL,
 			Token:         cfg.LLM.Token,
-			Debug:         debug,
 			Timeout:       2 * time.Minute,
-			Heartbeat:     5 * time.Second,
 		},
 		WebServer:  webServer,
 		Debug:      debug,
@@ -128,15 +126,6 @@ func main() {
 		webServer.SetActionHandler(
 			func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
 				return llm.EditTasksWithAction(tasks, action, selected, processor.LLMOpts)
-			},
-			func(history []webui.OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error) {
-				var llmHistory []llm.OpenAIMessage
-				for _, msg := range history {
-					llmHistory = append(llmHistory, llm.OpenAIMessage{Role: msg.Role, Content: msg.Content})
-				}
-				// For chat, we don't have allowedCommits context, so pass nil
-				updated, text, err := llm.ChatWithRequests(llmHistory, tasks, processor.LLMOpts, nil)
-				return updated, text, err
 			},
 			func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
 				if index < 0 || index >= len(tasks) {

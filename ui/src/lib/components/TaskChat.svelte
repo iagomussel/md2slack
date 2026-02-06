@@ -99,6 +99,11 @@
                                 if (data.tasks) {
                                     onTasksUpdate(data.tasks);
                                 }
+                            } else if (currentEvent === "chunk") {
+                                messages[assistantIndex].content +=
+                                    data.text || "";
+                                messages[assistantIndex].type = "streaming";
+                                messages = [...messages];
                             } else if (currentEvent === "tool_start") {
                                 // Add tool to the assistant message
                                 if (!messages[assistantIndex].tools) {
