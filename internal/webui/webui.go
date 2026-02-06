@@ -47,11 +47,17 @@ type State struct {
 	NextActions []string             `json:"next_actions"`
 }
 
+type RunRequest struct {
+	Date     string `json:"date"`
+	RepoPath string `json:"repo_path"`
+	Author   string `json:"author"`
+}
+
 type Server struct {
 	addr     string
 	mu       sync.Mutex
 	state    State
-	runCh    chan string
+	runCh    chan RunRequest
 	onSend   func(report string) error
 	onRefine func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
 	onSave   func(date string, tasks []gitdiff.TaskChange, report string) error
@@ -59,7 +65,7 @@ type Server struct {
 }
 
 func Start(addr string, stageNames []string) *Server {
-	s := &Server{addr: addr, runCh: make(chan string, 1)}
+	s := &Server{addr: addr, runCh: make(chan RunRequest, 1)}
 	s.Reset(stageNames, "", "")
 	s.startHTTP()
 	return s
@@ -75,7 +81,7 @@ func (s *Server) SetActionHandler(onAction func(action string, selected []int, t
 	s.onAction = onAction
 }
 
-func (s *Server) RunChannel() <-chan string {
+func (s *Server) RunChannel() <-chan RunRequest {
 	return s.runCh
 }
 
@@ -170,6 +176,8 @@ func (s *Server) startHTTP() {
 	mux.HandleFunc("/send", s.handleSend)
 	mux.HandleFunc("/run", s.handleRun)
 	mux.HandleFunc("/action", s.handleAction)
+	mux.HandleFunc("/settings", s.handleSettings)
+	mux.HandleFunc("/scan-users", s.handleScanUsers)
 
 	srv := &http.Server{
 		Addr:    s.addr,
@@ -333,27 +341,102 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var payload struct {
-		Date string `json:"date"`
-	}
+	var payload RunRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	date := strings.TrimSpace(payload.Date)
-	if date == "" {
+	payload.Date = strings.TrimSpace(payload.Date)
+	payload.RepoPath = strings.TrimSpace(payload.RepoPath)
+	payload.Author = strings.TrimSpace(payload.Author)
+	if payload.Date == "" {
 		http.Error(w, "date is required", http.StatusBadRequest)
 		return
 	}
 	select {
-	case s.runCh <- date:
+	case s.runCh <- payload:
 		s.mu.Lock()
-		s.state.Date = date
+		s.state.Date = payload.Date
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "run already in progress", http.StatusConflict)
 	}
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		settings, err := loadSettings("")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		projects := buildProjectInfo(settings.ProjectPaths)
+		payload := struct {
+			Settings Settings      `json:"settings"`
+			Projects []ProjectInfo `json:"projects"`
+		}{
+			Settings: settings,
+			Projects: projects,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
+		return
+	}
+	if r.Method == http.MethodPost {
+		var payload struct {
+			ProjectPaths []string `json:"project_paths"`
+			Usernames    []string `json:"usernames"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		settings := Settings{ProjectPaths: payload.ProjectPaths, Usernames: payload.Usernames}
+		if err := saveSettings("", settings); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		projects := buildProjectInfo(settings.ProjectPaths)
+		resp := struct {
+			Settings Settings      `json:"settings"`
+			Projects []ProjectInfo `json:"projects"`
+		}{Settings: settings, Projects: projects}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (s *Server) handleScanUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	path := strings.TrimSpace(payload.Path)
+	if path == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	users, err := scanUsers(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := struct {
+		Usernames []string `json:"usernames"`
+	}{Usernames: users}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func appendLog(list []string, line string, max int) []string {

@@ -141,8 +141,6 @@ func main() {
 		Heartbeat:     5 * time.Second,
 	}
 
-	repoName := gitdiff.GetRepoName()
-
 	stageNames := []string{
 		"Preparing commit context",
 		"Summarizing commits",
@@ -157,11 +155,12 @@ func main() {
 		webServer = webui.Start(webAddr, stageNames)
 	}
 
-	processDate := func(date string) {
+	processDate := func(date string, repoPath string, authorOverride string) {
 		date = strings.TrimSpace(date)
 		if date == "" {
 			return
 		}
+		repoName := gitdiff.GetRepoNameAt(repoPath)
 		fmt.Printf("\n--- Processing Date: %s (Repo: %s) ---\n", date, repoName)
 		runStart := time.Now()
 		type uiController interface {
@@ -214,7 +213,7 @@ func main() {
 			fmt.Println(msg)
 		}
 
-		output, err := gitdiff.GenerateFacts(date, extra)
+		output, err := gitdiff.GenerateFactsWithOptions(date, extra, repoPath, authorOverride)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating facts for %s: %v\n", date, err)
 			return
@@ -402,14 +401,14 @@ func main() {
 	}
 
 	if len(dates) == 0 && webServer != nil {
-		for date := range webServer.RunChannel() {
-			processDate(date)
+		for req := range webServer.RunChannel() {
+			processDate(req.Date, req.RepoPath, req.Author)
 		}
 		return
 	}
 
 	for _, date := range dates {
-		processDate(date)
+		processDate(date, "", "")
 	}
 }
 

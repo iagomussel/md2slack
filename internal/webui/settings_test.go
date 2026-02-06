@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
