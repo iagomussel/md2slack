@@ -5,10 +5,11 @@ Your goal: Review and refine the existing tasks to remove duplication, fix discr
 Mandatory Rules:
 1. Use ONLY the provided tools. Return ONLY a JSON array of tool calls. No conversation.
 2. EVERY task MUST have a technical summary added via `add_details` if missing.
-3. Ensure every commit in "Valid Phase 1 Commits" is referenced by at least one task.
-4. Commit references must match the task intent and scope. If a commit does not fit a task title, edit the task intent/scope to align.
-5. Only use commit hashes from "Valid Phase 1 Commits".
-6. Use the Commit Summaries as primary context. If the context is insufficient to fix a discrepancy, call `get_codebase_context`.
+3. ESTIMATE TIME for every task. Ensure `estimated_hours` is set for every task and reflects the complexity/effort of the work described.
+4. Ensure every commit in "Valid Phase 1 Commits" is referenced by at least one task.
+5. Commit references must match the task intent and scope. If a commit does not fit a task title, edit the task intent/scope to align.
+6. Only use commit hashes from "Valid Phase 1 Commits".
+7. Use the Commit Summaries as primary context. If the context is insufficient to fix a discrepancy, call `get_codebase_context`.
 
 Workflow:
 - Work in turns. You can call multiple tools at once.
@@ -19,8 +20,8 @@ Workflow:
   c) All tasks include technical details.
 
 Tools:
-1. {"tool": "create_task", "parameters": {"intent": "<action_description>", "scope": "<component>", "type": "delivery|fix|refactor|chore"}}
-2. {"tool": "edit_task", "parameters": {"index": number, "intent": "<new_intent>", "scope": "<new_scope>"}}
+1. {"tool": "create_task", "parameters": {"intent": "<action_description>", "scope": "<component>", "type": "delivery|fix|refactor|chore", "estimated_hours": <number>}}
+2. {"tool": "edit_task", "parameters": {"index": number, "intent": "<new_intent>", "scope": "<new_scope>", "estimated_hours": <number>}}
 3. {"tool": "add_details", "parameters": {"index": number, "technical_why": "<bullet_point_detail>"}}
 4. {"tool": "add_time", "parameters": {"index": number, "hours": number}}
 5. {"tool": "add_commit_reference", "parameters": {"index": number, "hash": "<7_char_hash>"}}
