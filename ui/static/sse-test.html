@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SSE Debug Test</title>
+</head>
+<body>
+    <h1>SSE Debug Test</h1>
+    <button onclick="testSSE()">Test Chat SSE</button>
+    <div id="log" style="font-family: monospace; white-space: pre-wrap; margin-top: 20px;"></div>
+
+    <script>
+        function log(msg) {
+            const logDiv = document.getElementById('log');
+            logDiv.textContent += msg + '\n';
+        }
+
+        async function testSSE() {
+            log('=== Starting SSE test ===');
+            
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    history: [
+                        { role: 'user', content: 'hello' }
+                    ]
+                })
+            });
+
+            log('Response status: ' + response.status);
+            log('Content-Type: ' + response.headers.get('Content-Type'));
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    log('=== Stream ended ===');
+                    break;
+                }
+
+                const chunk = decoder.decode(value);
+                log('Chunk received:\n' + chunk);
+            }
+        }
+    </script>
+</body>
+</html>

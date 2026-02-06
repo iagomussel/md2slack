@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"md2slack/internal/gitdiff"
+	"md2slack/internal/llm/tools"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,9 @@ type LLMOptions struct {
 	OnToolLog     func(string)
 	OnToolStatus  func(string)
 	OnLLMLog      func(string)
+	OnStreamChunk func(string)         // Called for each text chunk during streaming
+	OnToolStart   func(string, string) // Called when a tool starts: (toolName, toolID)
+	OnToolEnd     func(string, string) // Called when a tool ends: (toolName, result)
 	Timeout       time.Duration
 	Heartbeat     time.Duration
 }
@@ -50,162 +54,7 @@ type ToolCall struct {
 }
 
 func getNativeTools() []llms.Tool {
-	return []llms.Tool{
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "create_task",
-				Description: "Create a new task summarized from commits or provided context.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"intent":          map[string]interface{}{"type": "string", "description": "What was done"},
-						"scope":           map[string]interface{}{"type": "string", "description": "Component or area"},
-						"type":            map[string]interface{}{"type": "string", "enum": []string{"delivery", "fix", "chore", "refactor", "meeting"}},
-						"estimated_hours": map[string]interface{}{"type": "number"},
-					},
-					"required": []string{"intent", "score", "type", "estimated_hours"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "edit_task",
-				Description: "Modify an existing task's properties.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"index":           map[string]interface{}{"type": "integer", "description": "0-based index of the task to edit"},
-						"intent":          map[string]interface{}{"type": "string"},
-						"scope":           map[string]interface{}{"type": "string"},
-						"estimated_hours": map[string]interface{}{"type": "number"},
-					},
-					"required": []string{"index"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "add_details",
-				Description: "Add technical details or bullet points to a task.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"index":         map[string]interface{}{"type": "integer"},
-						"technical_why": map[string]interface{}{"type": "string", "description": "Technical details (markdown bullets preferred)"},
-					},
-					"required": []string{"index", "technical_why"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "add_time",
-				Description: "Add additional hours to a task.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"index": map[string]interface{}{"type": "integer"},
-						"hours": map[string]interface{}{"type": "number"},
-					},
-					"required": []string{"index", "hours"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "add_commit_reference",
-				Description: "Link a commit hash to a task.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"index": map[string]interface{}{"type": "integer"},
-						"hash":  map[string]interface{}{"type": "string", "description": "Full commit hash"},
-					},
-					"required": []string{"index", "hash"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "get_codebase_context",
-				Description: "Search the codebase for context using ripgrep.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"query":       map[string]interface{}{"type": "string"},
-						"path":        map[string]interface{}{"type": "string", "description": "Optional subdirectory to search"},
-						"max_results": map[string]interface{}{"type": "integer", "default": 20},
-					},
-					"required": []string{"query"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "merge_tasks",
-				Description: "Merge multiple tasks into one.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"indices":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "integer"}},
-						"new_intent": map[string]interface{}{"type": "string"},
-						"new_scope":  map[string]interface{}{"type": "string"},
-					},
-					"required": []string{"indices", "new_intent"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "split_task",
-				Description: "Split a task into multiple smaller tasks.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"index": map[string]interface{}{"type": "integer"},
-						"new_tasks": map[string]interface{}{
-							"type": "array",
-							"items": map[string]interface{}{
-								"type": "object",
-								"properties": map[string]interface{}{
-									"intent":          map[string]interface{}{"type": "string"},
-									"scope":           map[string]interface{}{"type": "string"},
-									"type":            map[string]interface{}{"type": "string", "enum": []string{"delivery", "fix", "chore", "refactor", "meeting"}},
-									"estimated_hours": map[string]interface{}{"type": "number"},
-									"technical_why":   map[string]interface{}{"type": "string"},
-									"commits":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-								},
-								"required": []string{"intent", "type", "estimated_hours"},
-							},
-						},
-					},
-					"required": []string{"index", "new_tasks"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "remove_task",
-				Description: "Remove a task from the list.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"index": map[string]interface{}{"type": "integer"},
-					},
-					"required": []string{"index"},
-				},
-			},
-		},
-	}
+	return tools.GetLLMDefinitions()
 }
 
 func (tc *ToolCall) UnmarshalJSON(data []byte) error {
@@ -1348,21 +1197,6 @@ func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.Group
 	return out, err
 }
 
-func getAdapter(options LLMOptions) (LLMAdapter, error) {
-	provider := strings.ToLower(options.Provider)
-	switch provider {
-	case "ollama":
-		return NewOllamaAdapter(options.ModelName, options.BaseUrl)
-	case "openai", "codex":
-		return NewOpenAIAdapter(options.ModelName, options.Token, options.BaseUrl)
-	case "anthropic":
-		return NewAnthropicAdapter(options.ModelName, options.Token, options.BaseUrl)
-	default:
-		// Default to Ollama if unknown
-		return NewOllamaAdapter(options.ModelName, options.BaseUrl)
-	}
-}
-
 func convertToLLMCMessages(messages []OpenAIMessage, system string) []llms.MessageContent {
 	var result []llms.MessageContent
 	if system != "" {
@@ -1385,13 +1219,8 @@ func convertToLLMCMessages(messages []OpenAIMessage, system string) []llms.Messa
 }
 
 func callJSON(messages []OpenAIMessage, system string, options LLMOptions, target interface{}, tools ...llms.Tool) error {
-	adapter, err := getAdapter(options)
-	if err != nil {
-		return err
-	}
-
 	llmsMessages := convertToLLMCMessages(messages, system)
-	payload := formatMessages(messages) // system is already in fullMessages in original code but here we keep it separate for convert
+	payload := formatMessages(messages)
 	if system != "" {
 		payload = "SYSTEM: " + system + "\n" + payload
 	}
@@ -1407,6 +1236,11 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	adapter, err := createLLM(ctx, options)
+	if err != nil {
+		return err
+	}
 
 	callOpts := []llms.CallOption{
 		llms.WithRepetitionPenalty(options.RepeatPenalty),
@@ -1452,9 +1286,17 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 
 	responseText := resp.Choices[0].Content
 	toolCalls := resp.Choices[0].ToolCalls
+
+	fmt.Printf("[callJSON] Response - Text length: %d, Tool calls: %d\n", len(responseText), len(toolCalls))
+
 	emitLLMLog(options, "LLM OUTPUT", responseText)
 	if len(toolCalls) > 0 {
 		emitLLMLog(options, "LLM TOOL CALLS", fmt.Sprintf("%d calls", len(toolCalls)))
+		for i, tc := range toolCalls {
+			fmt.Printf("[callJSON] Tool call %d: %s with args: %s\n", i, tc.FunctionCall.Name, tc.FunctionCall.Arguments)
+		}
+	} else {
+		fmt.Printf("[callJSON] WARNING: No tool calls returned despite %d tools provided\n", len(tools))
 	}
 
 	// Handle native tool calls if they exist and target can accept them
@@ -1494,6 +1336,26 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 		}
 		raw, _ := json.Marshal(tmp)
 		return json.Unmarshal(raw, target)
+	}
+
+	// If we have tools defined but no tool calls were made, the LLM might have just returned text.
+	// In this case, if the target expects a wrapped response with text field, handle it.
+	if len(tools) > 0 {
+		// The LLM returned only text (no tool calls). This is valid - it might be explaining something.
+		// Try to unmarshal into a struct with a "text" field
+		type tempOutput struct {
+			Text  string     `json:"text"`
+			Tools []ToolCall `json:"tools"`
+		}
+		tmp := tempOutput{
+			Text:  responseText,
+			Tools: []ToolCall{},
+		}
+		raw, _ := json.Marshal(tmp)
+		if err := json.Unmarshal(raw, target); err == nil {
+			return nil
+		}
+		// If that didn't work, fall through to legacy JSON parsing
 	}
 
 	clean := strings.TrimSpace(responseText)

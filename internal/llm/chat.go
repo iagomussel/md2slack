@@ -24,7 +24,9 @@ func ChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.TaskChange
 	}
 	var out ChatOutput
 	// We call callJSON directly with history
-	err := callJSON(history, system, options, &out, getNativeTools()...)
+	tools := getNativeTools()
+	fmt.Printf("[ChatWithRequests] Calling LLM with %d tools\n", len(tools))
+	err := callJSON(history, system, options, &out, tools...)
 
 	if err != nil {
 		fmt.Printf("Chat LLM Error: %v\n", err)
@@ -41,7 +43,28 @@ func ChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.TaskChange
 		var status string
 		var log string
 		var updatedTasks []gitdiff.TaskChange
+
+		// Notify each tool start
+		if options.OnToolStart != nil {
+			for _, tool := range out.Tools {
+				paramsJSON, _ := json.Marshal(tool.Parameters)
+				options.OnToolStart(tool.Tool, string(paramsJSON))
+			}
+		}
+
 		updatedTasks, log, status = ApplyTools(out.Tools, currentTasks, allowedCommits)
+
+		// Notify each tool end
+		if options.OnToolEnd != nil {
+			resultData := map[string]interface{}{
+				"log":    log,
+				"status": status,
+			}
+			resultJSON, _ := json.Marshal(resultData)
+			for _, tool := range out.Tools {
+				options.OnToolEnd(tool.Tool, string(resultJSON))
+			}
+		}
 
 		// Emit logs if requested in options
 		emitToolUpdates(options, log, status)

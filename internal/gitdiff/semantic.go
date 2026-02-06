@@ -102,7 +102,10 @@ func (c *CommitChange) UnmarshalJSON(data []byte) error {
 // Pipeline Stage 2 Output
 type TaskChange struct {
 	TaskType       string   `json:"task_type"`
-	TaskIntent     string   `json:"task_intent"`
+	TaskIntent     string   `json:"task_intent"`             // Primary description used in UI if Title empty
+	Title          string   `json:"title,omitempty"`         // User-friendly title
+	Description    string   `json:"description,omitempty"`   // Detailed description
+	TimeEstimate   string   `json:"time_estimate,omitempty"` // String estimate like "2h"
 	Scope          string   `json:"scope"`
 	Commits        []string `json:"commits"`
 	Confidence     float64  `json:"confidence"`
@@ -111,6 +114,9 @@ type TaskChange struct {
 	Status         string   `json:"status,omitempty"`
 	IsHistorical   bool     `json:"is_historical,omitempty"`
 	IsManual       bool     `json:"is_manual,omitempty"`
+
+	// Helper methods
+	Intent string `json:"intent,omitempty"` // Alias for TaskIntent for legacy compatibility
 }
 
 func (t *TaskChange) UnmarshalJSON(data []byte) error {

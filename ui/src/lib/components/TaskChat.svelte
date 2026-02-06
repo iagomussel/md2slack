@@ -3,11 +3,10 @@
     let { isOpen, onClose, onTasksUpdate } = $props();
 
     /** @type {any[]} */
-    let history = $state([]);
+    let messages = $state([]);
     let input = $state("");
     let loading = $state(false);
 
-    // Add scroll ref
     /** @type {HTMLDivElement|undefined} */
     let chatContainer = $state();
 
@@ -20,38 +19,144 @@
     async function sendMessage() {
         if (!input.trim() || loading) return;
 
-        const userMsg = { role: "user", content: input };
-        history = [...history, userMsg];
+        const userContent = input;
         input = "";
         loading = true;
+
+        // Add user message
+        messages = [
+            ...messages,
+            { role: "user", content: userContent, type: "text" },
+        ];
+
+        // Add placeholder assistant message
+        messages = [
+            ...messages,
+            {
+                role: "assistant",
+                content: "",
+                type: "streaming",
+                tools: [],
+            },
+        ];
+
+        const assistantIndex = messages.length - 1;
+
+        const history = messages
+            .filter((m) => m.type === "text")
+            .map((m) => ({ role: m.role, content: m.content }));
 
         try {
             const res = await fetch("/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ history: history }),
+                body: JSON.stringify({ history }),
             });
-            if (res.ok) {
-                const data = await res.json();
-                const assistantMsg = data.message;
-                history = [...history, assistantMsg];
-                if (data.tasks) {
-                    onTasksUpdate(data.tasks);
+
+            if (!res.ok) {
+                throw new Error("Chat request failed");
+            }
+
+            const reader = res.body?.getReader();
+            const decoder = new TextDecoder();
+
+            if (!reader) {
+                throw new Error("No response body");
+            }
+
+            let buffer = "";
+            let currentEvent = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+
+                for (const line of lines) {
+                    if (!line.trim()) {
+                        currentEvent = ""; // Reset on empty line (end of event)
+                        continue;
+                    }
+
+                    if (line.startsWith("event:")) {
+                        currentEvent = line.substring(6).trim();
+                    } else if (line.startsWith("data:")) {
+                        const dataStr = line.substring(5).trim();
+                        try {
+                            const data = JSON.parse(dataStr);
+
+                            if (
+                                currentEvent === "message" ||
+                                data.text !== undefined
+                            ) {
+                                messages[assistantIndex].content =
+                                    data.text || "";
+                                messages[assistantIndex].type = "text";
+                                messages = [...messages];
+                                if (data.tasks) {
+                                    onTasksUpdate(data.tasks);
+                                }
+                            } else if (currentEvent === "tool_start") {
+                                // Add tool to the assistant message
+                                if (!messages[assistantIndex].tools) {
+                                    messages[assistantIndex].tools = [];
+                                }
+                                messages[assistantIndex].tools.push({
+                                    name: data.tool,
+                                    params: data.params,
+                                    result: null,
+                                });
+                                messages = [...messages];
+                            } else if (currentEvent === "tool_end") {
+                                // Update the tool with result
+                                const tool = messages[
+                                    assistantIndex
+                                ].tools?.find(
+                                    (t) => t.name === data.tool && !t.result,
+                                );
+                                if (tool) {
+                                    tool.result = data.result;
+                                    messages = [...messages];
+                                }
+                            } else if (
+                                currentEvent === "error" ||
+                                data.message
+                            ) {
+                                messages[assistantIndex].content =
+                                    `Error: ${data.message}`;
+                                messages[assistantIndex].type = "text";
+                                messages = [...messages];
+                            } else if (
+                                currentEvent === "done" ||
+                                data.status === "complete"
+                            ) {
+                                loading = false;
+                            }
+                        } catch (e) {
+                            console.error(
+                                "Failed to parse SSE data:",
+                                e,
+                                dataStr,
+                            );
+                        }
+                    }
                 }
-            } else {
-                console.error("Chat failed");
             }
         } catch (e) {
-            console.error("Chat error", e);
+            console.error("Chat error:", e);
+            messages[assistantIndex].content = "Sorry, an error occurred.";
+            messages[assistantIndex].type = "text";
+            messages = [...messages];
         } finally {
             loading = false;
-            // Scroll to bottom
-            if (chatContainer) {
-                setTimeout(() => {
-                    const el = /** @type {HTMLDivElement} */ (chatContainer);
-                    el.scrollTop = el.scrollHeight;
-                }, 50);
-            }
+            setTimeout(() => {
+                if (chatContainer) {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+            }, 50);
         }
     }
 </script>
@@ -89,7 +194,7 @@
             class="flex-1 overflow-y-auto p-4 space-y-4"
             bind:this={chatContainer}
         >
-            {#if history.length === 0}
+            {#if messages.length === 0}
                 <div class="text-center text-gray-500 text-sm mt-10">
                     <p>
                         Ask me to refine tasks, split items, or answer
@@ -101,67 +206,106 @@
                     </p>
                 </div>
             {/if}
-            {#each history as msg}
+
+            {#each messages as msg}
                 <div
                     class="flex {msg.role === 'user'
                         ? 'justify-end'
                         : 'justify-start'}"
                 >
                     <div
-                        class="max-w-[85%] rounded-lg px-3 py-2 text-sm {msg.role ===
+                        class="max-w-[85%] rounded-lg px-4 py-2 {msg.role ===
                         'user'
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-[#1c2128] text-gray-300 border border-white/10'}"
+                            ? 'bg-orange-600 text-white'
+                            : 'bg-white/5 text-gray-200'}"
                     >
-                        <p class="whitespace-pre-wrap">{msg.content}</p>
+                        <div class="text-sm whitespace-pre-wrap">
+                            {msg.content}
+                        </div>
+
+                        {#if msg.tools && msg.tools.length > 0}
+                            <div class="mt-2 space-y-2">
+                                {#each msg.tools as tool}
+                                    <div
+                                        class="bg-black/20 rounded border border-white/10 p-2"
+                                    >
+                                        <div
+                                            class="text-xs font-mono text-orange-400"
+                                        >
+                                            🔧 {tool.name}
+                                        </div>
+                                        {#if tool.params}
+                                            <details class="mt-1">
+                                                <summary
+                                                    class="text-xs text-gray-400 cursor-pointer hover:text-gray-300"
+                                                >
+                                                    Parameters
+                                                </summary>
+                                                <pre
+                                                    class="text-xs text-gray-500 mt-1 overflow-x-auto">{JSON.stringify(
+                                                        tool.params,
+                                                        null,
+                                                        2,
+                                                    )}</pre>
+                                            </details>
+                                        {/if}
+                                        {#if tool.result}
+                                            <details class="mt-1">
+                                                <summary
+                                                    class="text-xs text-gray-400 cursor-pointer hover:text-gray-300"
+                                                >
+                                                    Result
+                                                </summary>
+                                                <pre
+                                                    class="text-xs text-gray-500 mt-1 overflow-x-auto">{tool.result}</pre>
+                                            </details>
+                                        {/if}
+                                    </div>
+                                {/each}
+                            </div>
+                        {/if}
                     </div>
                 </div>
             {/each}
+
             {#if loading}
                 <div class="flex justify-start">
                     <div
-                        class="bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-500 animate-pulse"
+                        class="bg-white/5 text-gray-400 rounded-lg px-4 py-2 text-sm"
                     >
-                        Thinking...
+                        <div class="flex items-center gap-2">
+                            <div
+                                class="w-2 h-2 bg-orange-500 rounded-full animate-pulse"
+                            ></div>
+                            Thinking...
+                        </div>
                     </div>
                 </div>
             {/if}
         </div>
 
-        <div class="p-4 border-t border-white/10 bg-[#161b22]">
-            <div class="relative">
-                <textarea
+        <div class="p-4 border-t border-white/10">
+            <form
+                onsubmit={(e) => {
+                    e.preventDefault();
+                    sendMessage();
+                }}
+                class="flex gap-2"
+            >
+                <input
                     bind:value={input}
-                    onkeydown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            sendMessage();
-                        }
-                    }}
-                    placeholder="Type a command..."
-                    class="w-full bg-[#0d1117] border border-white/10 rounded-lg pl-3 pr-10 py-2 text-sm text-gray-200 outline-none focus:border-blue-500/50 resize-none h-20"
-                ></textarea>
+                    disabled={loading}
+                    placeholder="Ask me anything..."
+                    class="flex-1 bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 outline-none focus:border-orange-500/50 disabled:opacity-50"
+                />
                 <button
-                    onclick={sendMessage}
-                    aria-label="Send message"
+                    type="submit"
                     disabled={loading || !input.trim()}
-                    class="absolute bottom-2 right-2 p-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
                 >
-                    <svg
-                        class="w-4 h-4"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                    >
-                        <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                        />
-                    </svg>
+                    Send
                 </button>
-            </div>
+            </form>
         </div>
     </div>
 {/if}

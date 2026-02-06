@@ -74,19 +74,26 @@ type OpenAIMessage struct {
 }
 
 type Server struct {
-	addr          string
-	mu            sync.Mutex
-	state         State
-	stageNames    []string
-	runCh         chan RunRequest
-	onSend        func(report string) error
-	onRefine      func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onSave        func(date string, tasks []gitdiff.TaskChange, report string) error
-	onAction      func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onChat        func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error)
-	onUpdateTask  func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onLoadHistory func(repo string, date string) ([]gitdiff.TaskChange, string, error)
-	onClearTasks  func(repo string, date string) error
+	addr                string
+	mu                  sync.Mutex
+	state               State
+	stageNames          []string
+	runCh               chan RunRequest
+	onSend              func(report string) error
+	onRefine            func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onSave              func(date string, tasks []gitdiff.TaskChange, report string) error
+	onAction            func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onChat              func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error)
+	onChatWithCallbacks func(history []OpenAIMessage, tasks []gitdiff.TaskChange, callbacks ChatCallbacks) ([]gitdiff.TaskChange, string, error)
+	onUpdateTask        func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onLoadHistory       func(repo string, date string) ([]gitdiff.TaskChange, string, error)
+	onClearTasks        func(repo string, date string) error
+}
+
+type ChatCallbacks struct {
+	OnStreamChunk func(text string)
+	OnToolStart   func(toolName string, paramsJSON string)
+	OnToolEnd     func(toolName string, resultJSON string)
 }
 
 func Start(addr string, stageNames []string) *Server {
@@ -110,6 +117,12 @@ func (s *Server) SetActionHandler(
 	s.onAction = onAction
 	s.onChat = onChat
 	s.onUpdateTask = onUpdateTask
+}
+
+func (s *Server) SetChatWithCallbacks(
+	onChatWithCallbacks func(history []OpenAIMessage, tasks []gitdiff.TaskChange, callbacks ChatCallbacks) ([]gitdiff.TaskChange, string, error),
+) {
+	s.onChatWithCallbacks = onChatWithCallbacks
 }
 
 func (s *Server) SetLoadClearHandlers(

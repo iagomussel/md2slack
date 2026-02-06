@@ -147,6 +147,24 @@ func main() {
 			},
 		)
 
+		// Register chat handler with callbacks for streaming tool events
+		webServer.SetChatWithCallbacks(
+			func(history []webui.OpenAIMessage, tasks []gitdiff.TaskChange, callbacks webui.ChatCallbacks) ([]gitdiff.TaskChange, string, error) {
+				var llmHistory []llm.OpenAIMessage
+				for _, msg := range history {
+					llmHistory = append(llmHistory, llm.OpenAIMessage{Role: msg.Role, Content: msg.Content})
+				}
+				// Create LLM options with callbacks
+				opts := processor.LLMOpts
+				opts.OnToolStart = callbacks.OnToolStart
+				opts.OnToolEnd = callbacks.OnToolEnd
+				opts.OnStreamChunk = callbacks.OnStreamChunk
+
+				updated, text, err := llm.StreamChatWithRequests(llmHistory, tasks, opts, nil)
+				return updated, text, err
+			},
+		)
+
 		for req := range webServer.RunChannel() {
 			processor.ProcessDate(req.Date, req.RepoPath, req.Author, "")
 		}
