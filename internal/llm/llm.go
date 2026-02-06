@@ -49,6 +49,33 @@ type ToolCall struct {
 	Parameters map[string]interface{} `json:"parameters"`
 }
 
+func (tc *ToolCall) UnmarshalJSON(data []byte) error {
+	type Alias ToolCall
+	var aux Alias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// If we have a nested parameters field, use it
+	if aux.Parameters != nil {
+		tc.Tool = aux.Tool
+		tc.Parameters = aux.Parameters
+		return nil
+	}
+
+	// Otherwise, treat the entire object as parameters, excluding the "tool" key
+	var flat map[string]interface{}
+	if err := json.Unmarshal(data, &flat); err != nil {
+		return err
+	}
+
+	tc.Tool = castString(flat["tool"])
+	delete(flat, "tool")
+	tc.Parameters = flat
+
+	return nil
+}
+
 func readPromptFile(filename string) string {
 	// Try local prompts directory first
 	content, err := os.ReadFile(filepath.Join("prompts", filename))

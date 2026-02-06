@@ -17,12 +17,12 @@ ALWAYS Return a JSON object:
 }
 
 Available Tools:
-- create_task(intent, scope, type, estimated_hours)
-- edit_task(index, intent, scope, estimated_hours)
-- add_details(index, technical_why)
-- add_time(index, hours)
-- add_commit_reference(index, hash)
-- get_codebase_context(query, path, max_results)
+- create_task(intent, scope, type, estimated_hours) -> {"tool": "create_task", "parameters": {"intent": "...", "scope": "...", "type": "...", "estimated_hours": 1}}
+- edit_task(index, intent, scope, estimated_hours) -> {"tool": "edit_task", "parameters": {"index": 0, "intent": "...", "scope": "...", "estimated_hours": 1}}
+- add_details(index, technical_why) -> {"tool": "add_details", "parameters": {"index": 0, "technical_why": "..."}}
+- add_time(index, hours) -> {"tool": "add_time", "parameters": {"index": 0, "hours": 1}}
+- add_commit_reference(index, hash) -> {"tool": "add_commit_reference", "parameters": {"index": 0, "hash": "..."}}
+- get_codebase_context(query, path, max_results) -> {"tool": "get_codebase_context", "parameters": {"query": "...", "path": "...", "max_results": 20}}
 
 Current Task List:
 {{TASKS_JSON}}

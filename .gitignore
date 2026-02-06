@@ -6,3 +6,4 @@ webui.json
 node_modules
 /ui/dist
 /internal/webui/dist
+md2slack.db

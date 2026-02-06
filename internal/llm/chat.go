@@ -39,12 +39,18 @@ func ChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.TaskChange
 	// Apply tools
 	if len(out.Tools) > 0 {
 		var status string
+		var log string
 		var updatedTasks []gitdiff.TaskChange
-		updatedTasks, _, status = ApplyTools(out.Tools, currentTasks, allowedCommits)
+		updatedTasks, log, status = ApplyTools(out.Tools, currentTasks, allowedCommits)
+
+		// Emit logs if requested in options
+		emitToolUpdates(options, log, status)
 
 		// If the response text is empty, provide a summary of actions
 		if responseText == "" {
 			responseText = fmt.Sprintf("Executed actions: %s", status)
+		} else if status != "" {
+			responseText = fmt.Sprintf("%s\n\n(Action: %s)", responseText, status)
 		}
 		return updatedTasks, responseText, nil
 	}
