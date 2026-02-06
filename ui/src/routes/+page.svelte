@@ -56,7 +56,7 @@
 		}
 	}
 
-	/** @param {any} commit */
+	/** @param {{ date?: number, author?: string }} commit */
 	function handleCommitClick(commit) {
 		if (commit.date) {
 			// Convert unix timestamp to YYYY-MM-DD
@@ -116,15 +116,68 @@
 	});
 
 	async function handleRun() {
-		await fetch("/run", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				date: date,
-				repo_path: selectedProject,
-				author: selectedUser,
-			}),
-		});
+		try {
+			// Clear local state for immediate feedback
+			tasks = [];
+			report_html = "";
+			logs = ["Queuing analysis..."];
+			stages = stages.map((s) => ({
+				...s,
+				status: "pending",
+				duration: "",
+			}));
+
+			await fetch("/run", {
+				method: "POST",
+				body: JSON.stringify({
+					date,
+					repo_path: selectedProject,
+					author: selectedUser,
+				}),
+			});
+		} catch (e) {
+			console.error("Failed to trigger run", e);
+		}
+	}
+	async function handleSend() {
+		try {
+			const res = await fetch("/send", { method: "POST" });
+			if (res.ok) {
+				alert("Report sent to Slack!");
+			} else {
+				const errorTxt = await res.text();
+				alert("Failed to send: " + errorTxt);
+			}
+		} catch (e) {
+			console.error("Failed to send", e);
+		}
+	}
+	/** @param {number} index @param {string} action */
+	async function handleTaskAction(index, action) {
+		try {
+			// Update status to show something is happening
+			stages = stages.map((s, i) =>
+				i === 3 ? { ...s, status: "running" } : s,
+			);
+
+			const res = await fetch("/action", {
+				method: "POST",
+				body: JSON.stringify({ action, selected: [index] }),
+			});
+			if (res.ok) {
+				const updatedTasks = await res.json();
+				tasks = updatedTasks;
+				stages = stages.map((s, i) =>
+					i === 3 ? { ...s, status: "done", note: "Refined" } : s,
+				);
+				// Also refresh report
+				const reportRes = await fetch("/state");
+				const state = await reportRes.json();
+				report_html = state.report_html;
+			}
+		} catch (e) {
+			console.error("Action failed", e);
+		}
 	}
 </script>
 
@@ -133,8 +186,9 @@
 		appState={{ selectedProject, selectedUser, logs }}
 		{projects}
 		{settings}
-		onSelectProject={(path) => (selectedProject = path)}
-		onSelectUser={(user) => (selectedUser = user)}
+		onSelectProject={(/** @type {string} */ path) =>
+			(selectedProject = path)}
+		onSelectUser={(/** @type {string} */ user) => (selectedUser = user)}
 		onAddProject={handleAddProject}
 		onScanUsers={handleScanUsers}
 		onCommitClick={handleCommitClick}
@@ -169,7 +223,9 @@
 
 			<div class="flex items-center gap-3">
 				<button
-					class="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 rounded-lg text-xs font-bold transition-colors"
+					onclick={handleSend}
+					disabled={!report_html}
+					class="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-xs font-bold transition-colors"
 				>
 					Send to Slack
 				</button>
@@ -208,11 +264,13 @@
 										);
 									}}
 									class="relative flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/5 overflow-hidden {stage.status ===
-									'done'
+									'running'
 										? 'animate-lightning'
+										: ''} {stage.status === 'done'
+										? 'border-green-500/20 bg-green-500/5'
 										: ''}"
 								>
-									{#if stage.status === "done"}
+									{#if stage.status === "running"}
 										<div
 											class="absolute inset-0 bg-green-500/5 pointer-events-none"
 										></div>
@@ -220,14 +278,35 @@
 											class="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-green-400 to-transparent lightning-line"
 										></div>
 									{/if}
+
 									<div
-										class="w-2 h-2 rounded-full z-10 {stage.status ===
-										'done'
-											? 'bg-green-400 shadow-[0_0_8px_#4ade80]'
-											: stage.status === 'running'
-												? 'bg-orange-500 animate-pulse'
-												: 'bg-gray-600'}"
-									></div>
+										class="z-10 flex shrink-0 items-center justify-center"
+									>
+										{#if stage.status === "done"}
+											<div class="w-4 h-4 text-green-400">
+												<svg
+													fill="none"
+													viewBox="0 0 24 24"
+													stroke="currentColor"
+												>
+													<path
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														stroke-width="3"
+														d="M5 13l4 4L19 7"
+													/>
+												</svg>
+											</div>
+										{:else}
+											<div
+												class="w-2 h-2 rounded-full {stage.status ===
+												'running'
+													? 'bg-orange-500 animate-pulse'
+													: 'bg-gray-600'}"
+											></div>
+										{/if}
+									</div>
+
 									<div class="flex flex-col z-10">
 										<span
 											class="text-xs font-medium {stage.status ===
@@ -262,15 +341,13 @@
 							>
 								Synthesized Tasks
 							</h3>
-							<div class="flex gap-2">
-								<button
-									class="p-1 px-3 text-[10px] font-bold bg-white/5 hover:bg-white/10 border border-white/10 rounded-md transition-colors"
-									>+ New</button
-								>
-							</div>
+							<span
+								class="px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 text-[10px] font-bold"
+								>{tasks.length} Total</span
+							>
 						</div>
 						<div class="flex-1 overflow-y-auto p-6">
-							<TaskList {tasks} />
+							<TaskList {tasks} onTaskAction={handleTaskAction} />
 						</div>
 					</section>
 				</div>

@@ -778,6 +778,9 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 			if newTask.TaskType == "" {
 				newTask.TaskType = "delivery"
 			}
+			if h, ok := castInt(params["estimated_hours"]); ok {
+				newTask.EstimatedHours = &h
+			}
 			tasks = append(tasks, newTask)
 			logs = append(logs, fmt.Sprintf("Success: created task with index %d", len(tasks)-1))
 			status = fmt.Sprintf("Created task #%d: %s", len(tasks)-1, intent)
@@ -793,6 +796,9 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 			}
 			if scope := castString(params["scope"]); scope != "" {
 				tasks[idx].Scope = scope
+			}
+			if h, ok := castInt(params["estimated_hours"]); ok {
+				tasks[idx].EstimatedHours = &h
 			}
 			logs = append(logs, fmt.Sprintf("Success: edited task %d", idx))
 			status = fmt.Sprintf("Edited task #%d", idx)

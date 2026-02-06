@@ -213,18 +213,30 @@ func main() {
 			fmt.Println(msg)
 		}
 
-		output, err := gitdiff.GenerateFactsWithOptions(date, extra, repoPath, authorOverride)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error generating facts for %s: %v\n", date, err)
-			return
-		}
-
-		// --- STAGE 1: Extracting Intent (Parallel) ---
+		// --- STAGE 0: Preparing commit context ---
 		stageStart := time.Now()
 		if ui != nil {
 			ui.StageStart(0, "")
 		}
-		logf("Analyzing %d commits in parallel...", len(output.Commits))
+		output, err := gitdiff.GenerateFactsWithOptions(date, extra, repoPath, authorOverride)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating facts for %s: %v\n", date, err)
+			if ui != nil {
+				ui.Error(err.Error())
+			}
+			return
+		}
+		if ui != nil {
+			ui.StageDone(0, fmt.Sprintf("%d commits found", len(output.Commits)))
+		}
+		logf("Stage 0 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+
+		// --- STAGE 1: Summarizing commits (Parallel) ---
+		stageStart = time.Now()
+		if ui != nil {
+			ui.StageStart(1, "")
+		}
+		logf("Summarizing %d commits in parallel...", len(output.Commits))
 
 		type commitResult struct {
 			index int
@@ -265,16 +277,16 @@ func main() {
 		}
 
 		if ui != nil {
-			ui.StageDone(0, fmt.Sprintf("%d analyzed", len(commitChanges)))
+			ui.StageDone(1, fmt.Sprintf("%d analyzed", len(commitChanges)))
 		}
 		logf("Stage 1 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
-		// --- STAGE 2: Synthesizing Tasks ---
+		// --- STAGE 2: Generating tasks ---
 		stageStart = time.Now()
 		if ui != nil {
-			ui.StageStart(1, "")
+			ui.StageStart(2, "")
 		}
-		logf("Synthesizing tasks (Manual first, then Commits)...")
+		logf("Generating tasks (Manual first, then Commits)...")
 
 		manualTasks, _ := llm.IncorporateExtraContext(output.Extra, llmOpts)
 		var commitTasks []gitdiff.TaskChange
@@ -301,28 +313,43 @@ func main() {
 		allTasks = append(allTasks, commitTasks...)
 
 		if ui != nil {
-			ui.StageDone(1, fmt.Sprintf("%d tasks", len(allTasks)))
+			ui.StageDone(2, fmt.Sprintf("%d tasks", len(allTasks)))
 		}
 		logf("Stage 2 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
-		// --- STAGE 3: Suggesting Next Actions ---
+		// --- STAGE 3: Reviewing tasks ---
 		stageStart = time.Now()
 		if ui != nil {
-			ui.StageStart(2, "")
+			ui.StageStart(3, "")
+		}
+		logf("Reviewing and refining tasks...")
+		allTasks, err = llm.RefineTasks(allTasks, llmOpts)
+		if err != nil {
+			errf("Warning: task refinement failed: %v", err)
+		}
+		if ui != nil {
+			ui.StageDone(3, "Refined")
+		}
+		logf("Stage 3 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+
+		// --- STAGE 4: Suggesting next actions ---
+		stageStart = time.Now()
+		if ui != nil {
+			ui.StageStart(4, "")
 		}
 		nextActions, err := llm.SuggestNextActions(allTasks, llmOpts)
 		if err != nil {
 			errf("Warning: failed to suggest next actions: %v", err)
 		}
 		if ui != nil {
-			ui.StageDone(2, fmt.Sprintf("%d actions", len(nextActions)))
+			ui.StageDone(4, fmt.Sprintf("%d actions", len(nextActions)))
 		}
-		logf("Stage 3 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+		logf("Stage 4 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
-		// --- STAGE 4: Finalizing Report ---
+		// --- STAGE 5: Rendering report ---
 		stageStart = time.Now()
 		if ui != nil {
-			ui.StageStart(3, "")
+			ui.StageStart(5, "")
 		}
 		report := renderer.RenderReport(date, nil, allTasks, nextActions)
 		if webServer != nil {
@@ -349,13 +376,13 @@ func main() {
 		}
 
 		if ui != nil {
-			ui.StageDone(3, "ready")
+			ui.StageDone(5, "ready")
 			if webServer == nil {
 				ui.Stop()
 				ui = nil
 			}
 		}
-		logf("Stage 4 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+		logf("Stage 5 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 		fmt.Println("\n--- FINAL REPORT ---")
 		fmt.Println(report)
 

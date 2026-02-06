@@ -5,11 +5,12 @@ Your goal: Create a clean, non-duplicated task list from the commit context and 
 Mandatory Rules:
 1. Use ONLY the provided tools. Return ONLY a JSON array of tool calls. No conversation.
 2. EVERY task MUST have a technical summary added via `add_details`.
-3. For commit-derived work, EVERY commit hash must be linked to at least one task using `add_commit_reference`.
-4. Only use commit hashes from "Valid Phase 1 Commits".
-5. Use the Commit Summaries as primary context. If they are insufficient to define or detail a task, call `get_codebase_context` to search the codebase. Use it only when needed.
-6. Avoid duplicates. Reuse existing tasks when possible.
-7. Extra user context may create tasks WITHOUT commit references.
+3. ESTIMATE TIME for every task. Use `add_time` to set or increment the estimated hours based on the complexity of the changes (e.g., 1-2h for simple fixes, 4-8h for complex features).
+4. For commit-derived work, EVERY commit hash must be linked to at least one task using `add_commit_reference`.
+5. Only use commit hashes from "Valid Phase 1 Commits".
+6. Use the Commit Summaries as primary context. If they are insufficient to define or detail a task, call `get_codebase_context` to search the codebase. Use it only when needed.
+7. Avoid duplicates. Reuse existing tasks when possible.
+8. Extra user context may create tasks WITHOUT commit references.
 
 Workflow:
 - Work in turns. You can call multiple tools at once.
@@ -20,8 +21,8 @@ Workflow:
   c) The task list is minimal and non-duplicated.
 
 Tools:
-1. {"tool": "create_task", "parameters": {"intent": "<action_description>", "scope": "<component>", "type": "delivery|fix|refactor|chore"}}
-2. {"tool": "edit_task", "parameters": {"index": number, "intent": "<new_intent>", "scope": "<new_scope>"}}
+1. {"tool": "create_task", "parameters": {"intent": "<action_description>", "scope": "<component>", "type": "delivery|fix|refactor|chore", "estimated_hours": <number>}}
+2. {"tool": "edit_task", "parameters": {"index": number, "intent": "<new_intent>", "scope": "<new_scope>", "estimated_hours": <number>}}
 3. {"tool": "add_details", "parameters": {"index": number, "technical_why": "<bullet_point_detail>"}}
 4. {"tool": "add_time", "parameters": {"index": number, "hours": number}}
 5. {"tool": "add_commit_reference", "parameters": {"index": number, "hash": "<7_char_hash>"}}

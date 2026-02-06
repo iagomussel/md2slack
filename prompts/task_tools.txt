@@ -5,9 +5,10 @@ Your goal: Map every "Commit" to a "Task" in the "Current Tasks (State)".
 Mandatory Rules:
 1. EVERY commit hash you are given MUST be added to at least one task using `add_commit_reference`.
 2. EVERY task MUST have a technical summary added via `add_details`.
-3. If no existing task fits, use `create_task`.
-4. Indices are 0-based. Use them accurately according to the "Current Tasks (State)" list.
-5. If the commit signals are insufficient to define or detail a task, call `get_codebase_context` to search the codebase. Use it only when needed.
+3. ESTIMATE TIME for every task. Use `add_time` to set or increment the estimated hours based on the complexity of the changes (e.g., 1-2h for simple fixes, 4-8h for complex features).
+4. If no existing task fits, use `create_task`.
+5. Indices are 0-based. Use them accurately according to the "Current Tasks (State)" list.
+6. If the commit signals are insufficient to define or detail a task, call `get_codebase_context` to search the codebase. Use it only when needed.
 
 Workflow:
 - You work in turns. You can call multiple tools at once.
@@ -18,8 +19,8 @@ Workflow:
   c) The task list correctly reflects the cumulative work.
 
 Tools:
-1. {"tool": "create_task", "parameters": {"intent": "<action_description>", "scope": "<component>", "type": "delivery|fix|refactor|chore"}}
-2. {"tool": "edit_task", "parameters": {"index": number, "intent": "<new_intent>", "scope": "<new_scope>"}}
+1. {"tool": "create_task", "parameters": {"intent": "<action_description>", "scope": "<component>", "type": "delivery|fix|refactor|chore", "estimated_hours": <number>}}
+2. {"tool": "edit_task", "parameters": {"index": number, "intent": "<new_intent>", "scope": "<new_scope>", "estimated_hours": <number>}}
 3. {"tool": "add_details", "parameters": {"index": number, "technical_why": "<bullet_point_detail>"}}
 4. {"tool": "add_time", "parameters": {"index": number, "hours": number}}
 5. {"tool": "add_commit_reference", "parameters": {"index": number, "hash": "<7_char_hash>"}}

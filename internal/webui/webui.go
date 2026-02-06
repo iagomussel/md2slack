@@ -59,18 +59,19 @@ type RunRequest struct {
 }
 
 type Server struct {
-	addr     string
-	mu       sync.Mutex
-	state    State
-	runCh    chan RunRequest
-	onSend   func(report string) error
-	onRefine func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onSave   func(date string, tasks []gitdiff.TaskChange, report string) error
-	onAction func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	addr       string
+	mu         sync.Mutex
+	state      State
+	stageNames []string
+	runCh      chan RunRequest
+	onSend     func(report string) error
+	onRefine   func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onSave     func(date string, tasks []gitdiff.TaskChange, report string) error
+	onAction   func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
 }
 
 func Start(addr string, stageNames []string) *Server {
-	s := &Server{addr: addr, runCh: make(chan RunRequest, 1)}
+	s := &Server{addr: addr, stageNames: stageNames, runCh: make(chan RunRequest, 1)}
 	s.Reset(stageNames, "", "")
 	s.startHTTP()
 	return s
@@ -386,9 +387,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case s.runCh <- payload:
-		s.mu.Lock()
-		s.state.Date = payload.Date
-		s.mu.Unlock()
+		s.Reset(s.stageNames, payload.Date, "")
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "run already in progress", http.StatusConflict)
