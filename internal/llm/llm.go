@@ -146,6 +146,65 @@ func getNativeTools() []llms.Tool {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "merge_tasks",
+				Description: "Merge multiple tasks into one.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"indices":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "integer"}},
+						"new_intent": map[string]interface{}{"type": "string"},
+						"new_scope":  map[string]interface{}{"type": "string"},
+					},
+					"required": []string{"indices", "new_intent"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "split_task",
+				Description: "Split a task into multiple smaller tasks.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"index": map[string]interface{}{"type": "integer"},
+						"new_tasks": map[string]interface{}{
+							"type": "array",
+							"items": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"intent":          map[string]interface{}{"type": "string"},
+									"scope":           map[string]interface{}{"type": "string"},
+									"type":            map[string]interface{}{"type": "string", "enum": []string{"delivery", "fix", "chore", "refactor", "meeting"}},
+									"estimated_hours": map[string]interface{}{"type": "number"},
+									"technical_why":   map[string]interface{}{"type": "string"},
+									"commits":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+								},
+								"required": []string{"intent", "type", "estimated_hours"},
+							},
+						},
+					},
+					"required": []string{"index", "new_tasks"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "remove_task",
+				Description: "Remove a task from the list.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"index": map[string]interface{}{"type": "integer"},
+					},
+					"required": []string{"index"},
+				},
+			},
+		},
 	}
 }
 
@@ -978,6 +1037,125 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				continue
 			}
 			logs = append(logs, fmt.Sprintf("Context (query %q):\n%s", query, out))
+
+		case "merge_tasks":
+			indices := castIntSlice(params["indices"])
+			if len(indices) < 2 {
+				logs = append(logs, "Error: merge_tasks requires at least 2 indices")
+				continue
+			}
+			newIntent := castString(params["new_intent"])
+			newScope := castString(params["new_scope"])
+
+			var mergedCommits []string
+			var mergedHours int
+			var mergedDetails []string
+			var mergedType string
+
+			// Sort indices descending to facilitate removal later if we were doing it in-place
+			// But here we'll just rebuild the list for simplicity.
+			idxMap := make(map[int]bool)
+			for _, idx := range indices {
+				if idx < 0 || idx >= len(tasks) {
+					logs = append(logs, fmt.Sprintf("Error: index %d out of bounds", idx))
+					continue
+				}
+				idxMap[idx] = true
+				t := tasks[idx]
+				mergedCommits = append(mergedCommits, t.Commits...)
+				if t.EstimatedHours != nil {
+					mergedHours += *t.EstimatedHours
+				}
+				if t.TechnicalWhy != "" {
+					mergedDetails = append(mergedDetails, t.TechnicalWhy)
+				}
+				if mergedType == "" {
+					mergedType = t.TaskType
+				}
+			}
+
+			// Deduplicate commits
+			uniqueCommits := make(map[string]bool)
+			var finalCommits []string
+			for _, c := range mergedCommits {
+				if !uniqueCommits[c] {
+					uniqueCommits[c] = true
+					finalCommits = append(finalCommits, c)
+				}
+			}
+
+			newTask := gitdiff.TaskChange{
+				TaskIntent:     newIntent,
+				Scope:          newScope,
+				TaskType:       mergedType,
+				Commits:        finalCommits,
+				EstimatedHours: &mergedHours,
+				TechnicalWhy:   strings.Join(mergedDetails, "\n---\n"),
+			}
+
+			// Create new task list without merged ones
+			var newTasks []gitdiff.TaskChange
+			for i, t := range tasks {
+				if !idxMap[i] {
+					newTasks = append(newTasks, t)
+				}
+			}
+			newTasks = append(newTasks, newTask)
+			tasks = newTasks
+			logs = append(logs, fmt.Sprintf("Success: merged tasks %v into new task #%d", indices, len(tasks)-1))
+			status = fmt.Sprintf("Merged %d tasks", len(indices))
+
+		case "split_task":
+			idx, ok := castInt(params["index"])
+			if !ok || idx < 0 || idx >= len(tasks) {
+				logs = append(logs, fmt.Sprintf("Error: index %v out of bounds", params["index"]))
+				continue
+			}
+
+			rawNewTasks, _ := params["new_tasks"].([]interface{})
+			if len(rawNewTasks) == 0 {
+				logs = append(logs, "Error: split_task requires new_tasks")
+				continue
+			}
+
+			var newlyCreated []gitdiff.TaskChange
+			for _, rt := range rawNewTasks {
+				m, _ := rt.(map[string]interface{})
+				nt := gitdiff.TaskChange{
+					TaskIntent:   castString(m["intent"]),
+					Scope:        castString(m["scope"]),
+					TaskType:     castString(m["type"]),
+					TechnicalWhy: castString(m["technical_why"]),
+					Commits:      castStringSlice(m["commits"]),
+				}
+				if h, ok := castInt(m["estimated_hours"]); ok {
+					nt.EstimatedHours = &h
+				}
+				newlyCreated = append(newlyCreated, nt)
+			}
+
+			// Rebuild list
+			var newTasks []gitdiff.TaskChange
+			for i, t := range tasks {
+				if i == idx {
+					newTasks = append(newTasks, newlyCreated...)
+				} else {
+					newTasks = append(newTasks, t)
+				}
+			}
+			tasks = newTasks
+			logs = append(logs, fmt.Sprintf("Success: split task %d into %d new tasks", idx, len(newlyCreated)))
+			status = fmt.Sprintf("Split task #%d into %d", idx, len(newlyCreated))
+
+		case "remove_task":
+			idx, ok := castInt(params["index"])
+			if !ok || idx < 0 || idx >= len(tasks) {
+				logs = append(logs, fmt.Sprintf("Error: index %v out of bounds", params["index"]))
+				continue
+			}
+			tasks = append(tasks[:idx], tasks[idx+1:]...)
+			logs = append(logs, fmt.Sprintf("Success: removed task %d", idx))
+			status = fmt.Sprintf("Removed task #%d", idx)
 		}
 	}
 	return tasks, strings.Join(logs, "\n"), status
@@ -1119,6 +1297,42 @@ func castInt(v interface{}) (int, bool) {
 	return 0, false
 }
 
+func castIntSlice(v interface{}) []int {
+	var out []int
+	switch val := v.(type) {
+	case []interface{}:
+		for _, item := range val {
+			if i, ok := castInt(item); ok {
+				out = append(out, i)
+			}
+		}
+	case float64:
+		out = append(out, int(val))
+	case int:
+		out = append(out, val)
+	case string:
+		if i, err := strconv.Atoi(val); err == nil {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func castStringSlice(v interface{}) []string {
+	var out []string
+	switch val := v.(type) {
+	case []interface{}:
+		for _, item := range val {
+			out = append(out, castString(item))
+		}
+	case string:
+		if val != "" {
+			out = append(out, val)
+		}
+	}
+	return out
+}
+
 func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.GroupedTask, error) {
 	system := readPromptFile("task_grouper.txt")
 	if system == "" {
@@ -1213,6 +1427,11 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 
 	if len(tools) > 0 {
 		callOpts = append(callOpts, llms.WithTools(tools))
+
+		// For Anthropic, force tool usage to prevent explanatory text
+		if provider == "anthropic" {
+			callOpts = append(callOpts, llms.WithToolChoice("auto"))
+		}
 	}
 
 	if strings.ToLower(options.Provider) == "ollama" {

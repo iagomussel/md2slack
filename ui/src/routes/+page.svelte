@@ -46,9 +46,23 @@
 			if (res.ok) {
 				const state = await res.json();
 				logs = state.logs || [];
-				tasks = state.tasks || [];
 				stages = state.stages || [];
-				report_html = state.report_html || "";
+
+				// Only update tasks/report if the date still matches
+				// to avoid race conditions when switching dates
+				if (state.date === date) {
+					console.log(
+						`[loadState] Date matches (${state.date}), updating tasks:`,
+						state.tasks?.length || 0,
+					);
+					tasks = state.tasks || [];
+					report_html = state.report_html || "";
+				} else {
+					console.log(
+						`[loadState] Date mismatch: state.date=${state.date}, ui.date=${date}, skipping task update`,
+					);
+				}
+
 				if (!date && state.date) date = state.date;
 			}
 		} catch (e) {
@@ -65,6 +79,9 @@
 
 	$effect(() => {
 		if (date && selectedProject) {
+			console.log(
+				`[loadHistory] Fetching tasks for date=${date}, repo=${selectedProject}`,
+			);
 			loadHistory();
 		}
 	});
@@ -76,9 +93,13 @@
 			);
 			if (res.ok) {
 				const data = await res.json();
-				if (data && data.length > 0) {
-					tasks = data;
-				}
+				console.log(
+					`[loadHistory] Received ${data?.length || 0} tasks:`,
+					data,
+				);
+				tasks = data || [];
+			} else {
+				console.error(`[loadHistory] Failed with status ${res.status}`);
 			}
 		} catch (e) {
 			console.error("Failed to load history", e);

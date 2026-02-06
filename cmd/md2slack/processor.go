@@ -9,7 +9,6 @@ import (
 	"md2slack/internal/renderer"
 	"md2slack/internal/slack"
 	"md2slack/internal/storage"
-	"md2slack/internal/tui"
 	"md2slack/internal/webui"
 	"os"
 	"strings"
@@ -60,14 +59,8 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 				}
 			}
 		}
-	} else if !p.Debug {
-		ui = tui.Start(p.StageNames)
-		defer func() {
-			if ui != nil {
-				ui.Stop()
-			}
-		}()
 	}
+	// If no UI is available, just use simple logging
 
 	localLLMOpts := p.LLMOpts
 	localLLMOpts.Quiet = ui != nil
@@ -176,14 +169,6 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 	var allTasks []gitdiff.TaskChange
 	if p.WebServer != nil {
 		allTasks = p.WebServer.GetTasks()
-		// Filter out manual tasks as they will be re-added from current context
-		var filtered []gitdiff.TaskChange
-		for _, t := range allTasks {
-			if !t.IsManual {
-				filtered = append(filtered, t)
-			}
-		}
-		allTasks = filtered
 	}
 
 	manualTasks, _ := llm.IncorporateExtraContext(output.Extra, localLLMOpts)
@@ -265,41 +250,6 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 			},
 			func(date string, tasks []gitdiff.TaskChange, report string) error {
 				return storage.SaveHistory(repoName, date, tasks, nil, nil, report)
-			},
-		)
-		p.WebServer.SetActionHandler(
-			func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
-				return llm.EditTasksWithAction(tasks, action, selected, localLLMOpts)
-			},
-			func(history []webui.OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error) {
-				var llmHistory []llm.OpenAIMessage
-				for _, msg := range history {
-					llmHistory = append(llmHistory, llm.OpenAIMessage{Role: msg.Role, Content: msg.Content})
-				}
-				updated, text, err := llm.ChatWithRequests(llmHistory, tasks, localLLMOpts, allowedCommits)
-				return updated, text, err
-			},
-			func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
-				if index < 0 || index >= len(tasks) {
-					return tasks, fmt.Errorf("index out of bounds")
-				}
-				tasks[index] = task
-				return tasks, nil
-			},
-		)
-		p.WebServer.SetLoadClearHandlers(
-			func(repo string, date string) ([]gitdiff.TaskChange, string, error) {
-				hist, err := storage.LoadHistory(repo, date)
-				if err != nil {
-					return nil, "", err
-				}
-				if hist == nil {
-					return nil, "", nil
-				}
-				return hist.Tasks, hist.Report, nil
-			},
-			func(repo string, date string) error {
-				return storage.DeleteHistoryDB(repo, date)
 			},
 		)
 	}

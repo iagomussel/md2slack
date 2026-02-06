@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"md2slack/internal/config"
+	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm"
+	"md2slack/internal/storage"
 	"md2slack/internal/webui"
 	"net"
 	"os"
@@ -17,11 +19,9 @@ import (
 func main() {
 	var debug bool
 	var install bool
-	var web bool
 	var webAddr string
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode")
 	flag.BoolVar(&install, "install", false, "Install the binary")
-	flag.BoolVar(&web, "web", false, "Enable web UI")
 	flag.StringVar(&webAddr, "web-addr", "127.0.0.1:8080", "Web UI address")
 	flag.Parse()
 
@@ -31,10 +31,7 @@ func main() {
 	}
 
 	args := flag.Args()
-	if len(args) < 1 && !web {
-		fmt.Println("usage: ssbot [--debug] [--web] [--web-addr host:port] [--install] [<MM-DD-YYYY>] [extra context]")
-		os.Exit(1)
-	}
+	// Web UI is always enabled, dates are optional
 
 	var dates []string
 	extra := ""
@@ -67,14 +64,12 @@ func main() {
 
 	if webAddr == webAddrDefault {
 		webAddr = net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
-		if web {
-			resolved, err := resolveWebAddr(cfg.Server.Host, cfg.Server.Port, cfg.Server.AutoIncrementPort)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error resolving web address: %v\n", err)
-				os.Exit(1)
-			}
-			webAddr = resolved
+		resolved, err := resolveWebAddr(cfg.Server.Host, cfg.Server.Port, cfg.Server.AutoIncrementPort)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving web address: %v\n", err)
+			os.Exit(1)
 		}
+		webAddr = resolved
 	}
 
 	stageNames := []string{
@@ -86,10 +81,8 @@ func main() {
 		"Rendering report",
 	}
 
-	var webServer *webui.Server
-	if web {
-		webServer = webui.Start(webAddr, stageNames)
-	}
+	// Always start web server
+	webServer := webui.Start(webAddr, stageNames)
 
 	processor := &ReportProcessor{
 		Config: cfg,
@@ -111,7 +104,49 @@ func main() {
 		StageNames: stageNames,
 	}
 
-	if len(dates) == 0 && webServer != nil {
+	if len(dates) == 0 {
+		// Register load/clear handlers immediately so they're available before any analysis runs
+		webServer.SetLoadClearHandlers(
+			func(repo string, date string) ([]gitdiff.TaskChange, string, error) {
+				repoName := gitdiff.GetRepoNameAt(repo)
+				hist, err := storage.LoadHistory(repoName, date)
+				if err != nil {
+					return nil, "", err
+				}
+				if hist == nil {
+					return nil, "", nil
+				}
+				return hist.Tasks, hist.Report, nil
+			},
+			func(repo string, date string) error {
+				repoName := gitdiff.GetRepoNameAt(repo)
+				return storage.DeleteHistoryDB(repoName, date)
+			},
+		)
+
+		// Register action handlers immediately so they're available before any analysis runs
+		webServer.SetActionHandler(
+			func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
+				return llm.EditTasksWithAction(tasks, action, selected, processor.LLMOpts)
+			},
+			func(history []webui.OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error) {
+				var llmHistory []llm.OpenAIMessage
+				for _, msg := range history {
+					llmHistory = append(llmHistory, llm.OpenAIMessage{Role: msg.Role, Content: msg.Content})
+				}
+				// For chat, we don't have allowedCommits context, so pass nil
+				updated, text, err := llm.ChatWithRequests(llmHistory, tasks, processor.LLMOpts, nil)
+				return updated, text, err
+			},
+			func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
+				if index < 0 || index >= len(tasks) {
+					return tasks, fmt.Errorf("index out of bounds")
+				}
+				tasks[index] = task
+				return tasks, nil
+			},
+		)
+
 		for req := range webServer.RunChannel() {
 			processor.ProcessDate(req.Date, req.RepoPath, req.Author, "")
 		}

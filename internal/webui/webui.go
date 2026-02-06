@@ -602,14 +602,17 @@ func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
 
 	tasks, report, err := s.onLoadHistory(repo, date)
 	if err != nil {
+		log.Printf("[handleLoadHistory] Error loading history for repo=%s, date=%s: %v", repo, date, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("[handleLoadHistory] Loaded %d tasks for repo=%s, date=%s", len(tasks), repo, date)
+
 	s.mu.Lock()
 	s.state.Tasks = tasks
 	s.state.Date = date
-	s.state.Repo = repo
+	s.state.Repo = gitdiff.GetRepoNameAt(repo)
 	if report != "" {
 		s.state.Report = report
 		s.state.ReportHTML = renderMarkdown(report)
@@ -632,6 +635,7 @@ func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
+	log.Printf("[handleLoadHistory] Returning %d tasks to client", len(tasks))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(tasks)
 }
