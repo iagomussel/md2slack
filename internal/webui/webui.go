@@ -621,7 +621,7 @@ const indexHTML = `<!doctype html>
 
     @media (min-width: 1100px) {
       .app-grid {
-        grid-template-columns: 280px minmax(0, 1fr) 360px;
+        grid-template-columns: 300px minmax(0, 1fr) 460px;
       }
     }
 
@@ -639,6 +639,26 @@ const indexHTML = `<!doctype html>
       box-shadow: var(--shadow-2);
       animation: panelIn 0.6s ease both;
       animation-delay: var(--delay, 0s);
+    }
+
+    .panel.workspace {
+      background: linear-gradient(180deg, rgba(20, 26, 34, 0.96), rgba(16, 22, 30, 0.98));
+      border-color: rgba(255, 176, 74, 0.25);
+      box-shadow: var(--shadow-1);
+    }
+
+    .workspace-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .workspace-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
     }
 
     .panel-header {
@@ -937,6 +957,47 @@ const indexHTML = `<!doctype html>
       color: var(--text-1);
     }
 
+    .slack-preview {
+      background: #0f1216;
+      border: 1px solid #2a313b;
+      border-radius: 14px;
+      padding: 18px 18px 22px;
+      min-height: 520px;
+      max-height: 820px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+      font-family: "Lato", "IBM Plex Sans", sans-serif;
+      color: #e9eef5;
+    }
+
+    .slack-preview h1,
+    .slack-preview h2,
+    .slack-preview h3 {
+      color: #f8fafc;
+      letter-spacing: 0.02em;
+    }
+
+    .slack-preview ul {
+      padding-left: 20px;
+    }
+
+    .slack-preview li {
+      margin-bottom: 6px;
+    }
+
+    .slack-preview code {
+      background: rgba(255, 176, 74, 0.12);
+      color: #ffd39a;
+      padding: 1px 4px;
+    }
+
+    .slack-preview strong {
+      color: #ffffff;
+    }
+
+    .slack-preview em {
+      color: #b8c3d0;
+    }
+
     .preview-body h1,
     .preview-body h2,
     .preview-body h3 {
@@ -1034,6 +1095,38 @@ const indexHTML = `<!doctype html>
         align-self: flex-start;
       }
     }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 6, 8, 0.72);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+
+    .modal-backdrop.active {
+      display: flex;
+    }
+
+    .modal {
+      width: min(480px, 92vw);
+      background: #121820;
+      border: 1px solid var(--line-1);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: var(--shadow-1);
+    }
+
+    .modal h3 {
+      margin: 0 0 10px;
+      font-family: "Rajdhani", "IBM Plex Sans", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      font-size: 12px;
+      color: var(--text-1);
+    }
   </style>
 </head>
 <body>
@@ -1055,6 +1148,27 @@ const indexHTML = `<!doctype html>
     <main class="app-main">
       <div class="app-grid">
         <section class="stack">
+          <div class="panel workspace" style="--delay: 0.02s">
+            <div class="panel-header">Workspace <span class="led"></span></div>
+            <div class="workspace-field">
+              <label class="meta">Project</label>
+              <div class="workspace-row">
+                <select id="project-select" class="select" data-testid="project-select"></select>
+                <button class="btn btn-secondary" id="add-project" data-testid="add-project">Add path</button>
+              </div>
+            </div>
+            <div class="workspace-field">
+              <label class="meta">Git Username</label>
+              <div class="workspace-row">
+                <select id="user-select" class="select" data-testid="user-select"></select>
+                <button class="btn btn-secondary" id="scan-users" data-testid="scan-users">Scan</button>
+              </div>
+              <div class="workspace-row">
+                <input id="new-user" class="input" placeholder="Add username" data-testid="new-user" />
+                <button class="btn btn-secondary" id="add-user" data-testid="add-user">Add</button>
+              </div>
+            </div>
+          </div>
           <div class="panel" style="--delay: 0.05s">
             <div class="panel-header">Stages <span class="led"></span></div>
             <ul id="stages" class="stages"></ul>
@@ -1074,7 +1188,7 @@ const indexHTML = `<!doctype html>
             <div class="toolbar">
               <div class="panel-header">Run + Tasks <span class="led"></span></div>
               <div class="control-row">
-                <input type="text" id="date" placeholder="MM-DD-YYYY" class="input" />
+                <input type="date" id="date" class="input" data-testid="date-input" />
                 <button class="btn btn-primary" id="run">Run</button>
                 <button class="btn btn-secondary" id="send">Send to Slack</button>
               </div>
@@ -1127,15 +1241,35 @@ const indexHTML = `<!doctype html>
         <section class="stack">
           <div class="panel" style="--delay: 0.18s">
             <div class="panel-header">Rendered Preview <span class="led"></span></div>
-            <div id="preview" class="preview-body"></div>
+            <div id="preview" class="preview-body slack-preview"></div>
           </div>
         </section>
       </div>
     </main>
   </div>
 
+  <div class="modal-backdrop" id="project-modal">
+    <div class="modal">
+      <h3>Add Project Path</h3>
+      <input id="project-path-input" class="input" placeholder="/path/to/repo" data-testid="project-path-input" />
+      <div class="editor-actions">
+        <button class="btn btn-primary" id="save-project-path">Save</button>
+        <button class="btn btn-secondary" id="cancel-project-path">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script>
-    const state = { editingDate: false, selected: new Set(), tasks: [], activeIndex: null };
+    const state = {
+      editingDate: false,
+      selected: new Set(),
+      tasks: [],
+      activeIndex: null,
+      settings: { project_paths: [], usernames: [] },
+      projects: [],
+      selectedProject: '',
+      selectedUser: '',
+    };
 
     function escapeHtml(str) {
       return str.replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[s]));
@@ -1161,6 +1295,84 @@ const indexHTML = `<!doctype html>
       const el = document.getElementById('logs');
       el.textContent = lines.join('\n');
       el.scrollTop = el.scrollHeight;
+    }
+
+    function toISODate(mdy) {
+      const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(mdy || '');
+      if (!match) return mdy;
+      return match[3] + "-" + match[1] + "-" + match[2];
+    }
+
+    function toMDYDate(iso) {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+      if (!match) return iso;
+      return match[2] + "-" + match[3] + "-" + match[1];
+    }
+
+    function renderWorkspace() {
+      const projectSelect = document.getElementById('project-select');
+      const userSelect = document.getElementById('user-select');
+      projectSelect.innerHTML = '';
+      const projects = state.projects || [];
+      if (projects.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no projects)';
+        projectSelect.appendChild(opt);
+      } else {
+        projects.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.path;
+          opt.textContent = p.name + " — " + p.path;
+          projectSelect.appendChild(opt);
+        });
+      }
+      if (!state.selectedProject && projects.length) {
+        state.selectedProject = projects[0].path;
+      }
+      projectSelect.value = state.selectedProject || '';
+
+      userSelect.innerHTML = '';
+      const users = state.settings.usernames || [];
+      if (users.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no usernames)';
+        userSelect.appendChild(opt);
+      } else {
+        users.forEach(u => {
+          const opt = document.createElement('option');
+          opt.value = u;
+          opt.textContent = u;
+          userSelect.appendChild(opt);
+        });
+      }
+      if (!state.selectedUser && users.length) {
+        state.selectedUser = users[0];
+      }
+      userSelect.value = state.selectedUser || '';
+    }
+
+    async function loadSettings() {
+      const res = await fetch('/settings');
+      if (!res.ok) return;
+      const data = await res.json();
+      state.settings = data.settings || { project_paths: [], usernames: [] };
+      state.projects = data.projects || [];
+      renderWorkspace();
+    }
+
+    async function saveSettings() {
+      const payload = {
+        project_paths: state.settings.project_paths || [],
+        usernames: state.settings.usernames || [],
+      };
+      const data = await postJSON('/settings', payload);
+      if (data) {
+        state.settings = data.settings || state.settings;
+        state.projects = data.projects || state.projects;
+        renderWorkspace();
+      }
     }
 
     function renderTaskList(tasks) {
@@ -1255,7 +1467,7 @@ const indexHTML = `<!doctype html>
       renderTasksPreview(state.tasks);
       const dateInput = document.getElementById('date');
       if (!state.editingDate && dateInput) {
-        dateInput.value = data.date || '';
+        dateInput.value = toISODate(data.date || '');
       }
       document.getElementById('status').textContent = data.status_line || '';
       document.getElementById('preview').innerHTML = data.report_html || '';
@@ -1288,10 +1500,57 @@ const indexHTML = `<!doctype html>
     document.getElementById('date').addEventListener('focus', () => state.editingDate = true);
     document.getElementById('date').addEventListener('blur', () => state.editingDate = false);
 
+    document.getElementById('project-select').addEventListener('change', (e) => {
+      state.selectedProject = e.target.value;
+    });
+
+    document.getElementById('user-select').addEventListener('change', (e) => {
+      state.selectedUser = e.target.value;
+    });
+
+    document.getElementById('add-project').addEventListener('click', () => {
+      document.getElementById('project-modal').classList.add('active');
+      document.getElementById('project-path-input').value = '';
+    });
+
+    document.getElementById('cancel-project-path').addEventListener('click', () => {
+      document.getElementById('project-modal').classList.remove('active');
+    });
+
+    document.getElementById('save-project-path').addEventListener('click', async () => {
+      const value = document.getElementById('project-path-input').value.trim();
+      if (!value) return;
+      state.settings.project_paths = state.settings.project_paths || [];
+      state.settings.project_paths.push(value);
+      await saveSettings();
+      state.selectedProject = value;
+      document.getElementById('project-modal').classList.remove('active');
+    });
+
+    document.getElementById('add-user').addEventListener('click', async () => {
+      const value = document.getElementById('new-user').value.trim();
+      if (!value) return;
+      state.settings.usernames = state.settings.usernames || [];
+      state.settings.usernames.push(value);
+      await saveSettings();
+      state.selectedUser = value;
+      document.getElementById('new-user').value = '';
+    });
+
+    document.getElementById('scan-users').addEventListener('click', async () => {
+      if (!state.selectedProject) return alert('Select a project path first.');
+      const res = await postJSON('/scan-users', { path: state.selectedProject });
+      if (res && res.usernames) {
+        state.settings.usernames = (state.settings.usernames || []).concat(res.usernames);
+        await saveSettings();
+      }
+    });
+
     document.getElementById('run').addEventListener('click', async () => {
-      const date = document.getElementById('date').value.trim();
+      const dateValue = document.getElementById('date').value.trim();
+      const date = toMDYDate(dateValue);
       if (!date) return alert('Digite uma data no formato MM-DD-YYYY');
-      await postJSON('/run', { date });
+      await postJSON('/run', { date, repo_path: state.selectedProject, author: state.selectedUser });
     });
     document.getElementById('send').addEventListener('click', async () => {
       await postJSON('/send', {});
@@ -1361,6 +1620,7 @@ const indexHTML = `<!doctype html>
     document.getElementById('action-shorter').addEventListener('click', () => runAction('make_shorter'));
     document.getElementById('action-improve').addEventListener('click', () => runAction('improve_text'));
 
+    loadSettings();
     loadState();
     setInterval(loadState, 1500);
   </script>
