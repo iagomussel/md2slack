@@ -17,6 +17,13 @@ func TestIndexHTMLHasConsoleClasses(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
+func TestIndexHTMLHasSlackPreviewClass(t *testing.T) {
+	if !strings.Contains(indexHTML, "slack-preview") {
+		t.Fatal("expected slack-preview class")
+	}
+}
+
 func TestIndexHTMLUsesSSBranding(t *testing.T) {
 	if !strings.Contains(indexHTML, "<title>ss Web UI</title>") {
 		t.Fatal("expected ss Web UI title")

@@ -11,7 +11,14 @@ import (
 )
 
 func sh(cmd string) (string, error) {
+	return runGit("", cmd)
+}
+
+func runGit(repoPath string, cmd string) (string, error) {
 	c := exec.Command("bash", "-c", cmd)
+	if strings.TrimSpace(repoPath) != "" {
+		c.Dir = repoPath
+	}
 	var out bytes.Buffer
 	c.Stdout = &out
 	c.Stderr = os.Stderr
@@ -22,18 +29,22 @@ func sh(cmd string) (string, error) {
 }
 
 type Output struct {
-	RepoName string           `json:"repo_name"`
-	Date     string           `json:"date"`
-	Author   string           `json:"author"`
-	Extra    string           `json:"extra_context,omitempty"`
-	Commits  []Commit         `json:"raw_commits,omitempty"`
-	Diffs    []CommitDiff     `json:"raw_diffs,omitempty"`
-	Summaries []CommitSummary `json:"summaries,omitempty"`
-	Semantic []CommitSemantic `json:"semantic,omitempty"`
+	RepoName  string           `json:"repo_name"`
+	Date      string           `json:"date"`
+	Author    string           `json:"author"`
+	Extra     string           `json:"extra_context,omitempty"`
+	Commits   []Commit         `json:"raw_commits,omitempty"`
+	Diffs     []CommitDiff     `json:"raw_diffs,omitempty"`
+	Summaries []CommitSummary  `json:"summaries,omitempty"`
+	Semantic  []CommitSemantic `json:"semantic,omitempty"`
 }
 
 func GetRepoName() string {
-	repo, _ := sh(`basename $(git rev-parse --show-toplevel 2>/dev/null) 2>/dev/null`)
+	return GetRepoNameAt("")
+}
+
+func GetRepoNameAt(repoPath string) string {
+	repo, _ := runGit(repoPath, `basename $(git rev-parse --show-toplevel 2>/dev/null) 2>/dev/null`)
 	if repo == "" {
 		return "unknown"
 	}
@@ -41,9 +52,19 @@ func GetRepoName() string {
 }
 
 func GenerateFacts(date string, extra string) (*Output, error) {
+	return GenerateFactsWithOptions(date, extra, "", "")
+}
+
+func GenerateFactsWithOptions(date string, extra string, repoPath string, authorOverride string) (*Output, error) {
+	if strings.TrimSpace(authorOverride) != "" && strings.TrimSpace(repoPath) == "" {
+		return nil, fmt.Errorf("repo path required when author override is set")
+	}
 	// 1. Get user and repo info
-	fullAuthor, _ := sh(`git config user.name`)
-	repo := GetRepoName()
+	fullAuthor := strings.TrimSpace(authorOverride)
+	if fullAuthor == "" {
+		fullAuthor, _ = runGit(repoPath, `git config user.name`)
+	}
+	repo := GetRepoNameAt(repoPath)
 
 	// 2. Format date for Git (it strictly needs YYYY-MM-DD)
 	isoDate := toISODate(date)
@@ -58,7 +79,7 @@ func GenerateFacts(date string, extra string) (*Output, error) {
 		authorPart = authorPart[:idx]
 	}
 
-	raw, err := sh(fmt.Sprintf(`
+	raw, err := runGit(repoPath, fmt.Sprintf(`
 git log --author="%s" --regexp-ignore-case \
 --since="%s 00:00:00" \
 --until="%s 23:59:59" \
@@ -76,7 +97,7 @@ git log --author="%s" --regexp-ignore-case \
 	var semantics []CommitSemantic
 
 	for _, commit := range commits {
-		diffText, err := sh(buildRawDiffCommand(commit.Hash))
+		diffText, err := runGit(repoPath, buildRawDiffCommand(commit.Hash))
 		if err == nil {
 			diffs = append(diffs, CommitDiff{CommitHash: commit.Hash, Diff: diffText})
 		} else {

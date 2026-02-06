@@ -1,0 +1,11 @@
+{
+  "name": "md2slack-webui-e2e",
+  "private": true,
+  "devDependencies": {
+    "cypress": "^13.6.6"
+  },
+  "scripts": {
+    "cy:run": "cypress run",
+    "cy:open": "cypress open"
+  }
+}
