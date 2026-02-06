@@ -1,0 +1,8 @@
+# allow crawling everything by default
+User-agent: *
+Disallow:
+
+# SEO Optimization
+Sitemap: https://md2slack.com/sitemap.xml
+
+

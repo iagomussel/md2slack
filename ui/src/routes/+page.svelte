@@ -1,0 +1,427 @@
+<script>
+	import Sidebar from "$lib/components/Sidebar.svelte";
+	import TaskList from "$lib/components/TaskList.svelte";
+	import { onMount } from "svelte";
+
+	let selectedProject = $state("");
+	let selectedUser = $state("");
+	/** @type {string[]} */
+	let logs = $state([]);
+	/** @type {any[]} */
+	let tasks = $state([]);
+	/** @type {any[]} */
+	let stages = $state([]);
+	let date = $state("");
+	let report_html = $state("");
+
+	/** @type {any[]} */
+	let projects = $state([]);
+	/** @type {{ usernames: string[], project_paths?: string[] }} */
+	let settings = $state({ usernames: [] });
+
+	console.log("Dashboard initializing...");
+
+	async function loadSettings() {
+		try {
+			const res = await fetch("/settings");
+			if (res.ok) {
+				const data = await res.json();
+				settings = data.settings || { usernames: [] };
+				projects = data.projects || [];
+				if (!selectedProject && projects.length > 0) {
+					selectedProject = projects[0].path;
+				}
+			}
+		} catch (e) {
+			console.error("Failed to load settings", e);
+		}
+	}
+
+	async function loadState() {
+		try {
+			const res = await fetch("/state");
+			if (res.ok) {
+				const data = await res.json();
+				logs = data.logs || [];
+				tasks = data.tasks || [];
+				stages = data.stages || [];
+				// Only pull date if we don't have one set locally
+				if (!date && data.date) {
+					date = data.date;
+				}
+				report_html = data.report_html || "";
+			}
+		} catch (e) {
+			console.error("Failed to load state", e);
+		}
+	}
+
+	/** @param {any} commit */
+	function handleCommitClick(commit) {
+		if (commit.date) {
+			// Convert unix timestamp to YYYY-MM-DD
+			date = new Date(commit.date * 1000).toISOString().split("T")[0];
+		}
+		if (commit.author) {
+			selectedUser = commit.author;
+		}
+	}
+
+	async function handleAddProject() {
+		const path = prompt("Enter absolute project path:");
+		if (!path) return;
+		const res = await fetch("/settings", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				project_paths: [...(settings.project_paths || []), path],
+				usernames: settings.usernames || [],
+			}),
+		});
+		if (res.ok) loadSettings();
+	}
+
+	async function handleScanUsers() {
+		const res = await fetch("/scan-users", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ path: selectedProject }),
+		});
+		if (res.ok) {
+			const data = await res.json();
+			const newUsers = data.usernames || [];
+			await fetch("/settings", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					project_paths: settings.project_paths || [],
+					usernames: [
+						...new Set([
+							...(settings.usernames || []),
+							...newUsers,
+						]),
+					],
+				}),
+			});
+			loadSettings();
+		}
+	}
+
+	onMount(() => {
+		console.log("Dashboard mounted");
+		loadSettings();
+		loadState();
+		const interval = setInterval(loadState, 2000);
+		return () => clearInterval(interval);
+	});
+
+	async function handleRun() {
+		await fetch("/run", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				date: date,
+				repo_path: selectedProject,
+				author: selectedUser,
+			}),
+		});
+	}
+</script>
+
+<div class="flex h-screen bg-[#080a0d] text-gray-100 overflow-hidden font-sans">
+	<Sidebar
+		appState={{ selectedProject, selectedUser, logs }}
+		{projects}
+		{settings}
+		onSelectProject={(path) => (selectedProject = path)}
+		onSelectUser={(user) => (selectedUser = user)}
+		onAddProject={handleAddProject}
+		onScanUsers={handleScanUsers}
+		onCommitClick={handleCommitClick}
+	/>
+
+	<main class="flex-1 flex flex-col min-w-0 overflow-hidden bg-[#0d1117]/50">
+		<header
+			class="h-16 border-b border-white/10 flex items-center justify-between px-8 shrink-0 bg-[#0d1117]"
+		>
+			<div class="flex items-center gap-6">
+				<div class="flex flex-col">
+					<label
+						for="target-date"
+						class="text-[10px] font-bold text-gray-500 uppercase tracking-widest"
+						>Target Date</label
+					>
+					<input
+						id="target-date"
+						type="date"
+						bind:value={date}
+						class="bg-transparent border-none text-sm font-semibold text-white outline-none focus:text-orange-400 transition-colors"
+					/>
+				</div>
+				<div class="h-8 w-px bg-white/10"></div>
+				<button
+					onclick={handleRun}
+					class="px-5 py-2 bg-orange-500 hover:bg-orange-600 text-black text-xs font-bold rounded-lg transition-all active:scale-95 shadow-lg shadow-orange-500/20"
+				>
+					Run Analysis
+				</button>
+			</div>
+
+			<div class="flex items-center gap-3">
+				<button
+					class="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 rounded-lg text-xs font-bold transition-colors"
+				>
+					Send to Slack
+				</button>
+			</div>
+		</header>
+
+		<div class="flex-1 overflow-y-auto p-8">
+			<div class="grid grid-cols-1 xl:grid-cols-2 gap-8 h-full">
+				<!-- Left Column: Stages & Tasks -->
+				<div class="flex flex-col gap-8">
+					<section
+						class="bg-[#0d1117] border border-white/10 rounded-2xl overflow-hidden shadow-xl"
+					>
+						<div
+							class="px-6 py-4 border-b border-white/10 flex items-center justify-between"
+						>
+							<h3
+								class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+							>
+								Pipeline Stages
+							</h3>
+						</div>
+						<div class="p-6 grid grid-cols-2 gap-4">
+							{#each stages as stage}
+								<div
+									onmousemove={(e) => {
+										const rect =
+											e.currentTarget.getBoundingClientRect();
+										e.currentTarget.style.setProperty(
+											"--x",
+											`${e.clientX - rect.left}px`,
+										);
+										e.currentTarget.style.setProperty(
+											"--y",
+											`${e.clientY - rect.top}px`,
+										);
+									}}
+									class="relative flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/5 overflow-hidden {stage.status ===
+									'done'
+										? 'animate-lightning'
+										: ''}"
+								>
+									{#if stage.status === "done"}
+										<div
+											class="absolute inset-0 bg-green-500/5 pointer-events-none"
+										></div>
+										<div
+											class="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-green-400 to-transparent lightning-line"
+										></div>
+									{/if}
+									<div
+										class="w-2 h-2 rounded-full z-10 {stage.status ===
+										'done'
+											? 'bg-green-400 shadow-[0_0_8px_#4ade80]'
+											: stage.status === 'running'
+												? 'bg-orange-500 animate-pulse'
+												: 'bg-gray-600'}"
+									></div>
+									<div class="flex flex-col z-10">
+										<span
+											class="text-xs font-medium {stage.status ===
+											'done'
+												? 'text-green-100'
+												: 'text-gray-200'}"
+											>{stage.name}</span
+										>
+										{#if stage.duration}
+											<span
+												class="text-[10px] {stage.status ===
+												'done'
+													? 'text-green-500/70'
+													: 'text-gray-500'}"
+												>{stage.duration}</span
+											>
+										{/if}
+									</div>
+								</div>
+							{/each}
+						</div>
+					</section>
+
+					<section
+						class="flex-1 bg-[#0d1117] border border-white/10 rounded-2xl overflow-hidden shadow-xl flex flex-col"
+					>
+						<div
+							class="px-6 py-4 border-b border-white/10 flex items-center justify-between shrink-0"
+						>
+							<h3
+								class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+							>
+								Synthesized Tasks
+							</h3>
+							<div class="flex gap-2">
+								<button
+									class="p-1 px-3 text-[10px] font-bold bg-white/5 hover:bg-white/10 border border-white/10 rounded-md transition-colors"
+									>+ New</button
+								>
+							</div>
+						</div>
+						<div class="flex-1 overflow-y-auto p-6">
+							<TaskList {tasks} />
+						</div>
+					</section>
+				</div>
+
+				<!-- Right Column: Preview -->
+				<section
+					class="bg-[#0d1117] border border-white/10 rounded-2xl overflow-hidden shadow-xl flex flex-col"
+				>
+					<div
+						class="px-6 py-4 border-b border-white/10 flex items-center justify-between shrink-0"
+					>
+						<h3
+							class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+						>
+							Slack Preview
+						</h3>
+						<span class="text-[10px] text-gray-500">wysiwyg</span>
+					</div>
+					<div
+						class="flex-1 overflow-y-auto bg-[#1a1d21] p-10 font-sans text-[15px] text-[#d1d2d3] leading-relaxed"
+					>
+						{#if report_html}
+							<div class="slack-content">
+								{@html report_html}
+							</div>
+						{:else}
+							<div
+								class="h-full flex flex-col items-center justify-center text-gray-600"
+							>
+								<span class="text-sm"
+									>Report will appear here</span
+								>
+							</div>
+						{/if}
+					</div>
+				</section>
+			</div>
+		</div>
+	</main>
+</div>
+
+<style>
+	:global(.slack-content b) {
+		color: #fff;
+		font-weight: 700;
+	}
+	:global(.slack-content code) {
+		background: rgba(255, 166, 87, 0.1);
+		color: #ffa657;
+		padding: 2px 4px;
+		border-radius: 4px;
+		font-family: "IBM Plex Mono", monospace;
+		font-size: 13px;
+	}
+	:global(.slack-content ul) {
+		padding-left: 20px;
+		list-style-type: disc;
+		margin: 12px 0;
+	}
+	:global(.slack-content li) {
+		margin-bottom: 6px;
+	}
+
+	/* Hide scrollbar but keep functionality */
+	.overflow-y-auto {
+		scrollbar-width: thin;
+		scrollbar-color: #30363d transparent;
+	}
+
+	@keyframes lightning-flow {
+		0% {
+			transform: translateX(-100%);
+			opacity: 0;
+		}
+		20% {
+			opacity: 1;
+		}
+		80% {
+			opacity: 1;
+		}
+		100% {
+			transform: translateX(100%);
+			opacity: 0;
+		}
+	}
+
+	@keyframes electric-pulse {
+		0%,
+		100% {
+			box-shadow: 0 0 5px rgba(74, 222, 128, 0.2);
+			border-color: rgba(74, 222, 128, 0.1);
+		}
+		50% {
+			box-shadow: 0 0 15px rgba(74, 222, 128, 0.4);
+			border-color: rgba(74, 222, 128, 0.3);
+		}
+	}
+
+	.animate-lightning {
+		animation: electric-pulse 2s infinite ease-in-out;
+	}
+
+	.lightning-line {
+		animation: lightning-flow 3s infinite linear;
+	}
+
+	.animate-lightning::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		background: radial-gradient(
+			circle at var(--x, 50%) var(--y, 50%),
+			rgba(74, 222, 128, 0.2) 0%,
+			transparent 50%
+		);
+		opacity: 0;
+		transition: opacity 0.3s;
+		pointer-events: none;
+	}
+
+	.animate-lightning:hover::after {
+		opacity: 1;
+	}
+
+	@keyframes electric-strike {
+		0%,
+		100% {
+			opacity: 0;
+		}
+		5%,
+		15% {
+			opacity: 1;
+			filter: brightness(2);
+		}
+		10% {
+			opacity: 0.5;
+		}
+	}
+
+	.animate-lightning {
+		position: relative;
+	}
+
+	.animate-lightning::before {
+		content: "";
+		position: absolute;
+		inset: 0;
+		border: 1px solid #4ade80;
+		border-radius: inherit;
+		opacity: 0;
+		animation: electric-strike 5s infinite;
+		pointer-events: none;
+	}
+</style>

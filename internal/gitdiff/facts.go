@@ -190,3 +190,73 @@ func GetRecentCommitDays(repoPath string, days int) ([]string, error) {
 	}
 	return dates, nil
 }
+
+type GitGraphCommit struct {
+	Hash    string   `json:"hash"`
+	Parents []string `json:"parents"`
+	Refs    []string `json:"refs"`
+	Subject string   `json:"subject"`
+	Author  string   `json:"author"`
+	Date    int64    `json:"date"`
+}
+
+func GetGitGraphData(repoPath string, limit int) ([]GitGraphCommit, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	// %H: hash, %P: parents, %D: refs, %s: subject, %an: author, %at: date
+	cmd := fmt.Sprintf(`git log --all --format="%%H|%%P|%%D|%%s|%%an|%%at" -n %d`, limit)
+	raw, err := runGit(repoPath, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(raw, "\n")
+	var commits []GitGraphCommit
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		parts := strings.Split(l, "|")
+		if len(parts) < 6 {
+			continue
+		}
+
+		hash := parts[0]
+		parents := strings.Fields(parts[1])
+
+		// Parse refs: e.g. "HEAD -> master, origin/master, tag: v1.0"
+		rawRefs := parts[2]
+		var refs []string
+		if rawRefs != "" {
+			refParts := strings.Split(rawRefs, ",")
+			for _, rp := range refParts {
+				rp = strings.TrimSpace(rp)
+				if strings.HasPrefix(rp, "HEAD -> ") {
+					rp = strings.TrimPrefix(rp, "HEAD -> ")
+				}
+				if strings.HasPrefix(rp, "tag: ") {
+					rp = strings.TrimPrefix(rp, "tag: ")
+				}
+				refs = append(refs, rp)
+			}
+		}
+
+		subject := parts[3]
+		author := parts[4]
+		dateStr := parts[5]
+		var date int64
+		fmt.Sscanf(dateStr, "%d", &date)
+
+		commits = append(commits, GitGraphCommit{
+			Hash:    hash,
+			Parents: parents,
+			Refs:    refs,
+			Subject: subject,
+			Author:  author,
+			Date:    date,
+		})
+	}
+	return commits, nil
+}
