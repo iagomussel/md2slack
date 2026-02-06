@@ -2,12 +2,24 @@
     /** @type {{ task: any, index: number, onClose: () => void, onSave: (index: number, task: any) => void }} */
     let { task, index, onClose, onSave } = $props();
 
-    let intent = $state(task?.task_intent || "");
-    let scope = $state(task?.scope || "");
-    let type = $state(task?.task_type || "delivery");
-    let estimated_hours = $state(task?.estimated_hours || 1);
-    let details = $state(task?.technical_why || "");
-    let commits = $state(task?.commits?.join(", ") || "");
+    let intent = $state("");
+    let scope = $state("");
+    let type = $state("delivery");
+    let status = $state("done");
+    let estimated_hours = $state(1);
+    let details = $state("");
+    let commits = $state("");
+
+    // Sync state when task prop changes (e.g. if another task is selected)
+    $effect(() => {
+        intent = task?.task_intent || "";
+        scope = task?.scope || "";
+        type = task?.task_type || "delivery";
+        status = task?.status || "done";
+        estimated_hours = task?.estimated_hours || 1;
+        details = task?.technical_why || "";
+        commits = task?.commits?.join(", ") || "";
+    });
 
     function save() {
         onSave(index, {
@@ -15,12 +27,13 @@
             task_intent: intent,
             scope: scope,
             task_type: type,
+            status: status,
             estimated_hours: Number(estimated_hours),
             technical_why: details,
             commits: commits
                 .split(",")
-                .map((c) => c.trim())
-                .filter((c) => c),
+                .map((/** @type {string} */ c) => c.trim())
+                .filter((/** @type {string} */ c) => c),
         });
         onClose();
     }
@@ -85,7 +98,7 @@
                 </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-4">
+            <div class="grid grid-cols-3 gap-4">
                 <div>
                     <label
                         for="task-type"
@@ -101,13 +114,31 @@
                         <option value="fix">Fix</option>
                         <option value="chore">Chore</option>
                         <option value="refactor">Refactor</option>
+                        <option value="meeting">Meeting</option>
+                    </select>
+                </div>
+                <div>
+                    <label
+                        for="task-status"
+                        class="block text-xs font-bold text-gray-500 uppercase mb-1"
+                        >Status</label
+                    >
+                    <select
+                        id="task-status"
+                        bind:value={status}
+                        class="w-full bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500/50 outline-none"
+                    >
+                        <option value="done">Done</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="blocked">Blocked</option>
+                        <option value="onhold">On Hold</option>
                     </select>
                 </div>
                 <div>
                     <label
                         for="task-hours"
                         class="block text-xs font-bold text-gray-500 uppercase mb-1"
-                        >Est. Hours</label
+                        >Hours</label
                     >
                     <input
                         id="task-hours"

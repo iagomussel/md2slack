@@ -66,9 +66,10 @@
 
 <div class="flex flex-col space-y-0.5 font-mono text-[11px] select-none py-2">
 	{#each graphData as c, i}
-		<div
+		<button
+			type="button"
 			onclick={() => onCommitClick?.(c)}
-			class="group flex items-center h-10 hover:bg-white/5 border-l-2 border-transparent hover:border-orange-500/50 transition-all cursor-pointer"
+			class="group flex items-center h-10 w-full hover:bg-white/5 border-l-2 border-transparent hover:border-orange-500/50 transition-all text-left"
 		>
 			<!-- Graph Column -->
 			<div class="relative w-16 h-full flex shrink-0">
@@ -121,7 +122,7 @@
 					<span class="truncate opacity-80">{c.author}</span>
 				</div>
 			</div>
-		</div>
+		</button>
 	{/each}
 </div>
 

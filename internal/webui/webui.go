@@ -74,17 +74,19 @@ type OpenAIMessage struct {
 }
 
 type Server struct {
-	addr         string
-	mu           sync.Mutex
-	state        State
-	stageNames   []string
-	runCh        chan RunRequest
-	onSend       func(report string) error
-	onRefine     func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onSave       func(date string, tasks []gitdiff.TaskChange, report string) error
-	onAction     func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onChat       func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error)
-	onUpdateTask func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	addr          string
+	mu            sync.Mutex
+	state         State
+	stageNames    []string
+	runCh         chan RunRequest
+	onSend        func(report string) error
+	onRefine      func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onSave        func(date string, tasks []gitdiff.TaskChange, report string) error
+	onAction      func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onChat        func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error)
+	onUpdateTask  func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onLoadHistory func(repo string, date string) ([]gitdiff.TaskChange, string, error)
+	onClearTasks  func(repo string, date string) error
 }
 
 func Start(addr string, stageNames []string) *Server {
@@ -108,6 +110,14 @@ func (s *Server) SetActionHandler(
 	s.onAction = onAction
 	s.onChat = onChat
 	s.onUpdateTask = onUpdateTask
+}
+
+func (s *Server) SetLoadClearHandlers(
+	onLoadHistory func(repo string, date string) ([]gitdiff.TaskChange, string, error),
+	onClearTasks func(repo string, date string) error,
+) {
+	s.onLoadHistory = onLoadHistory
+	s.onClearTasks = onClearTasks
 }
 
 func (s *Server) RunChannel() <-chan RunRequest {
@@ -215,6 +225,8 @@ func (s *Server) startHTTP() {
 	mux.HandleFunc("/api/scan-users", s.handleScanUsers)
 	mux.HandleFunc("/api/recent-activity", s.handleRecentActivity)
 	mux.HandleFunc("/api/git-graph", s.handleGitGraph)
+	mux.HandleFunc("/api/load-history", s.handleLoadHistory)
+	mux.HandleFunc("/api/clear-tasks", s.handleClearTasks)
 
 	sub, _ := fs.Sub(distFS, "dist")
 	fileServer := http.FileServer(http.FS(sub))
@@ -569,4 +581,84 @@ func renderMarkdown(md string) string {
 		return "<pre>" + html.EscapeString(md) + "</pre>"
 	}
 	return buf.String()
+}
+
+func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
+	if s.onLoadHistory == nil {
+		http.Error(w, "load history not configured", http.StatusBadRequest)
+		return
+	}
+	repo := r.URL.Query().Get("repo")
+	date := r.URL.Query().Get("date")
+	if repo == "" || date == "" {
+		http.Error(w, "repo and date are required", http.StatusBadRequest)
+		return
+	}
+
+	tasks, report, err := s.onLoadHistory(repo, date)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.Lock()
+	s.state.Tasks = tasks
+	s.state.Date = date
+	s.state.Repo = repo
+	if report != "" {
+		s.state.Report = report
+		s.state.ReportHTML = renderMarkdown(report)
+	} else {
+		s.state.Report = ""
+		s.state.ReportHTML = ""
+	}
+	// Also mark all stages as done if we loaded a report
+	if report != "" {
+		for i := range s.state.Stages {
+			s.state.Stages[i].Status = stageDone
+			s.state.Stages[i].Note = "Loaded from history"
+		}
+	} else {
+		// Reset stages
+		for i := range s.state.Stages {
+			s.state.Stages[i].Status = stagePending
+			s.state.Stages[i].Note = ""
+		}
+	}
+	s.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(tasks)
+}
+
+func (s *Server) handleClearTasks(w http.ResponseWriter, r *http.Request) {
+	if s.onClearTasks == nil {
+		http.Error(w, "clear tasks not configured", http.StatusBadRequest)
+		return
+	}
+	repo := r.URL.Query().Get("repo")
+	date := r.URL.Query().Get("date")
+	if repo == "" || date == "" {
+		http.Error(w, "repo and date are required", http.StatusBadRequest)
+		return
+	}
+
+	err := s.onClearTasks(repo, date)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.Lock()
+	s.state.Tasks = nil
+	s.state.Report = ""
+	s.state.ReportHTML = ""
+	// Reset stages
+	for i := range s.state.Stages {
+		s.state.Stages[i].Status = stagePending
+		s.state.Stages[i].Note = ""
+	}
+	s.mu.Unlock()
+
+	w.WriteHeader(http.StatusNoContent)
 }

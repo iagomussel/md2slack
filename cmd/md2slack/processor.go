@@ -275,6 +275,21 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 				return tasks, nil
 			},
 		)
+		p.WebServer.SetLoadClearHandlers(
+			func(repo string, date string) ([]gitdiff.TaskChange, string, error) {
+				hist, err := storage.LoadHistory(repo, date)
+				if err != nil {
+					return nil, "", err
+				}
+				if hist == nil {
+					return nil, "", nil
+				}
+				return hist.Tasks, hist.Report, nil
+			},
+			func(repo string, date string) error {
+				return storage.DeleteHistoryDB(repo, date)
+			},
+		)
 	}
 
 	if ui != nil {

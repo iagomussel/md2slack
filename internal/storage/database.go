@@ -102,3 +102,10 @@ func LoadHistoryDB(repoName string, date string) (*HistoryRecord, error) {
 
 	return &record, nil
 }
+func DeleteHistoryDB(repoName string, date string) error {
+	if err := initDB(); err != nil {
+		return err
+	}
+	_, err := db.Exec("DELETE FROM history WHERE repo_name = ? AND date = ?", repoName, date)
+	return err
+}

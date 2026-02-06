@@ -63,6 +63,46 @@
 		return () => clearInterval(interval);
 	});
 
+	$effect(() => {
+		if (date && selectedProject) {
+			loadHistory();
+		}
+	});
+
+	async function loadHistory() {
+		try {
+			const res = await fetch(
+				`/api/load-history?date=${date}&repo=${encodeURIComponent(selectedProject)}`,
+			);
+			if (res.ok) {
+				const data = await res.json();
+				if (data && data.length > 0) {
+					tasks = data;
+				}
+			}
+		} catch (e) {
+			console.error("Failed to load history", e);
+		}
+	}
+
+	async function handleClearTasks() {
+		if (!date || !selectedProject) return;
+		if (!confirm("Are you sure you want to clear tasks for this day?"))
+			return;
+		try {
+			const res = await fetch(
+				`/api/clear-tasks?date=${date}&repo=${encodeURIComponent(selectedProject)}`,
+				{ method: "POST" }, // Though handler in go doesn't strictly check method yet, it's good practice
+			);
+			if (res.ok) {
+				tasks = [];
+				report_html = "";
+			}
+		} catch (e) {
+			console.error("Failed to clear tasks", e);
+		}
+	}
+
 	async function handleAddProject() {
 		const path = prompt("Enter absolute path to git repository:");
 		if (!path) return;
@@ -165,7 +205,7 @@
 				const updated = await res.json();
 				tasks = updated;
 				// Refresh report
-				const reportRes = await fetch("/state");
+				const reportRes = await fetch("/api/state");
 				const state = await reportRes.json();
 				report_html = state.report_html;
 			}
@@ -212,7 +252,7 @@
 					i === 3 ? { ...s, status: "done", note: "Refined" } : s,
 				);
 				// Also refresh report
-				const reportRes = await fetch("/state");
+				const reportRes = await fetch("/api/state");
 				const state = await reportRes.json();
 				report_html = state.report_html;
 			}
@@ -338,6 +378,7 @@
 						<div class="p-6 grid grid-cols-2 gap-4">
 							{#each stages as stage}
 								<div
+									role="presentation"
 									onmousemove={(e) => {
 										const rect =
 											e.currentTarget.getBoundingClientRect();
@@ -428,10 +469,19 @@
 							>
 								Synthesized Tasks
 							</h3>
-							<span
-								class="px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 text-[10px] font-bold"
-								>{tasks.length} Total</span
-							>
+							<div class="flex items-center gap-3">
+								<button
+									onclick={handleClearTasks}
+									disabled={!tasks.length}
+									class="text-[10px] font-bold text-red-400 hover:text-red-300 transition-colors uppercase tracking-tight disabled:opacity-30 disabled:cursor-not-allowed"
+								>
+									Clear All
+								</button>
+								<span
+									class="px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 text-[10px] font-bold"
+									>{tasks.length} Total</span
+								>
+							</div>
 						</div>
 						<div class="flex-1 overflow-y-auto p-6">
 							<TaskList {tasks} onTaskAction={handleTaskAction} />

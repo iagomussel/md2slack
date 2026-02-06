@@ -10,19 +10,7 @@ Mandatory Rules:
 5. Indices are 0-based as shown in the task list.
 
 Format:
-ALWAYS Return a JSON object:
-{
-  "text": "Your textual response/answer here",
-  "tools": [ ... list of tool calls ... ]
-}
-
-Available Tools:
-- create_task(intent, scope, type, estimated_hours) -> {"tool": "create_task", "parameters": {"intent": "...", "scope": "...", "type": "...", "estimated_hours": 1}}
-- edit_task(index, intent, scope, estimated_hours) -> {"tool": "edit_task", "parameters": {"index": 0, "intent": "...", "scope": "...", "estimated_hours": 1}}
-- add_details(index, technical_why) -> {"tool": "add_details", "parameters": {"index": 0, "technical_why": "..."}}
-- add_time(index, hours) -> {"tool": "add_time", "parameters": {"index": 0, "hours": 1}}
-- add_commit_reference(index, hash) -> {"tool": "add_commit_reference", "parameters": {"index": 0, "hash": "..."}}
-- get_codebase_context(query, path, max_results) -> {"tool": "get_codebase_context", "parameters": {"query": "...", "path": "...", "max_results": 20}}
+Return a helpful textual response in the "text" field, and use the provided native tools for any modifications.
 
 Current Task List:
 {{TASKS_JSON}}

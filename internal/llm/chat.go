@@ -24,7 +24,7 @@ func ChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.TaskChange
 	}
 	var out ChatOutput
 	// We call callJSON directly with history
-	err := callJSON(history, system, options, &out)
+	err := callJSON(history, system, options, &out, getNativeTools()...)
 
 	if err != nil {
 		fmt.Printf("Chat LLM Error: %v\n", err)

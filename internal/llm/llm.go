@@ -49,6 +49,106 @@ type ToolCall struct {
 	Parameters map[string]interface{} `json:"parameters"`
 }
 
+func getNativeTools() []llms.Tool {
+	return []llms.Tool{
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "create_task",
+				Description: "Create a new task summarized from commits or provided context.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"intent":          map[string]interface{}{"type": "string", "description": "What was done"},
+						"scope":           map[string]interface{}{"type": "string", "description": "Component or area"},
+						"type":            map[string]interface{}{"type": "string", "enum": []string{"delivery", "fix", "chore", "refactor", "meeting"}},
+						"estimated_hours": map[string]interface{}{"type": "number"},
+					},
+					"required": []string{"intent", "score", "type", "estimated_hours"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "edit_task",
+				Description: "Modify an existing task's properties.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"index":           map[string]interface{}{"type": "integer", "description": "0-based index of the task to edit"},
+						"intent":          map[string]interface{}{"type": "string"},
+						"scope":           map[string]interface{}{"type": "string"},
+						"estimated_hours": map[string]interface{}{"type": "number"},
+					},
+					"required": []string{"index"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "add_details",
+				Description: "Add technical details or bullet points to a task.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"index":         map[string]interface{}{"type": "integer"},
+						"technical_why": map[string]interface{}{"type": "string", "description": "Technical details (markdown bullets preferred)"},
+					},
+					"required": []string{"index", "technical_why"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "add_time",
+				Description: "Add additional hours to a task.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"index": map[string]interface{}{"type": "integer"},
+						"hours": map[string]interface{}{"type": "number"},
+					},
+					"required": []string{"index", "hours"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "add_commit_reference",
+				Description: "Link a commit hash to a task.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"index": map[string]interface{}{"type": "integer"},
+						"hash":  map[string]interface{}{"type": "string", "description": "Full commit hash"},
+					},
+					"required": []string{"index", "hash"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "get_codebase_context",
+				Description: "Search the codebase for context using ripgrep.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query":       map[string]interface{}{"type": "string"},
+						"path":        map[string]interface{}{"type": "string", "description": "Optional subdirectory to search"},
+						"max_results": map[string]interface{}{"type": "integer", "default": 20},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+	}
+}
+
 func (tc *ToolCall) UnmarshalJSON(data []byte) error {
 	type Alias ToolCall
 	var aux Alias
@@ -206,7 +306,7 @@ func IncorporateExtraContext(extraContext string, options LLMOptions) ([]gitdiff
 	// Iterative Loop
 	for turn := 0; turn < 5; turn++ {
 		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools)
+		err := callJSON(messages, system, options, &tools, getNativeTools()...)
 		if err != nil {
 			return currentTasks, err
 		}
@@ -266,7 +366,7 @@ func GenerateTasksFromContext(commits []gitdiff.Commit, summaries []gitdiff.Comm
 
 	for turn := 0; turn < 8; turn++ {
 		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools)
+		err := callJSON(messages, system, options, &tools, getNativeTools()...)
 		if err != nil {
 			return currentTasks, err
 		}
@@ -329,7 +429,7 @@ func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, su
 
 	for turn := 0; turn < 8; turn++ {
 		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools)
+		err := callJSON(messages, system, options, &tools, getNativeTools()...)
 		if err != nil {
 			return currentTasks, err
 		}
@@ -417,7 +517,7 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 	// Iterative Loop: Allow the LLM to call tools and see results
 	for turn := 0; turn < 8; turn++ {
 		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools)
+		err := callJSON(messages, system, options, &tools, getNativeTools()...)
 		if err != nil {
 			return currentTasks, err
 		}
@@ -1070,7 +1170,7 @@ func convertToLLMCMessages(messages []OpenAIMessage, system string) []llms.Messa
 	return result
 }
 
-func callJSON(messages []OpenAIMessage, system string, options LLMOptions, target interface{}) error {
+func callJSON(messages []OpenAIMessage, system string, options LLMOptions, target interface{}, tools ...llms.Tool) error {
 	adapter, err := getAdapter(options)
 	if err != nil {
 		return err
@@ -1111,6 +1211,10 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 		callOpts = append(callOpts, llms.WithTopP(options.TopP))
 	}
 
+	if len(tools) > 0 {
+		callOpts = append(callOpts, llms.WithTools(tools))
+	}
+
 	if strings.ToLower(options.Provider) == "ollama" {
 		// Ollama in langchaingo supports JSON mode via options if the model supports it
 		// but specifically here the original code used "format": "json"
@@ -1128,7 +1232,44 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 	}
 
 	responseText := resp.Choices[0].Content
+	toolCalls := resp.Choices[0].ToolCalls
 	emitLLMLog(options, "LLM OUTPUT", responseText)
+	if len(toolCalls) > 0 {
+		emitLLMLog(options, "LLM TOOL CALLS", fmt.Sprintf("%d calls", len(toolCalls)))
+	}
+
+	// Handle native tool calls if they exist and target can accept them
+	if len(toolCalls) > 0 {
+		// Try to find if target has a field named Tools of type []ToolCall
+		// This is a bit hacky but it avoids changing all call sites immediately
+		// if we only use it for ChatOutput.
+		// For now, let's just check if it's a pointer to ChatOutput (defined in chat.go)
+		// Wait, ChatOutput is private to chat.go.
+		// Let's use reflection or just assume the target can be unmarshaled into.
+
+		var nativeTools []ToolCall
+		for _, tc := range toolCalls {
+			var params map[string]interface{}
+			_ = json.Unmarshal([]byte(tc.FunctionCall.Arguments), &params)
+			nativeTools = append(nativeTools, ToolCall{
+				Tool:       tc.FunctionCall.Name,
+				Parameters: params,
+			})
+		}
+
+		// If the LLM returned a text response AND tool calls, we want both.
+		// We'll try to marshal them into a JSON object that matches ChatOutput.
+		type tempOutput struct {
+			Text  string     `json:"text"`
+			Tools []ToolCall `json:"tools"`
+		}
+		tmp := tempOutput{
+			Text:  responseText,
+			Tools: nativeTools,
+		}
+		raw, _ := json.Marshal(tmp)
+		return json.Unmarshal(raw, target)
+	}
 
 	clean := strings.TrimSpace(responseText)
 	clean = stripCodeFences(clean)
