@@ -7,6 +7,7 @@ import (
 	"html"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -371,6 +372,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		cwd, _ := os.Getwd()
+		isRepo := gitdiff.GetRepoNameAt(cwd) != "unknown"
+		settings.ProjectPaths = ensureDefaultProjectPath(settings.ProjectPaths, cwd, isRepo)
 		projects := buildProjectInfo(settings.ProjectPaths)
 		payload := struct {
 			Settings Settings      `json:"settings"`

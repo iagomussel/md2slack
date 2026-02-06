@@ -27,3 +27,10 @@ func TestSettingsLoadSave(t *testing.T) {
 		t.Fatalf("unexpected usernames: %#v", loaded.Usernames)
 	}
 }
+
+func TestEnsureDefaultProjectPathAddsCurrentRepo(t *testing.T) {
+	paths := ensureDefaultProjectPath(nil, "/repo", true)
+	if len(paths) != 1 || paths[0] != "/repo" {
+		t.Fatalf("expected default repo path added, got %#v", paths)
+	}
+}

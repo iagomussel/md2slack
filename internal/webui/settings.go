@@ -100,6 +100,23 @@ func normalizeList(values []string) []string {
 	return out
 }
 
+func ensureDefaultProjectPath(paths []string, defaultPath string, isRepo bool) []string {
+	paths = normalizeList(paths)
+	if !isRepo || strings.TrimSpace(defaultPath) == "" {
+		return paths
+	}
+	if len(paths) == 0 {
+		return []string{defaultPath}
+	}
+	for _, p := range paths {
+		if p == defaultPath {
+			return paths
+		}
+	}
+	paths = append(paths, defaultPath)
+	return normalizeList(paths)
+}
+
 func buildProjectInfo(paths []string) []ProjectInfo {
 	var projects []ProjectInfo
 	for _, p := range normalizeList(paths) {
