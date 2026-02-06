@@ -49,8 +49,8 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 		// Re-load previous session if it exists
 		// Re-load previous session if it exists
 		if hist, err := storage.LoadHistory(repoName, date); err == nil && hist != nil {
-			if hist.Report != "" {
-				p.WebServer.SetReport(hist.Report)
+			if hist.Message != "" {
+				p.WebServer.SetReport(hist.Message)
 			}
 			// Load tasks separately
 			if tasks, err := storage.LoadTasks(repoName, date); err == nil {
@@ -58,7 +58,7 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 			}
 
 			// Mark stages as done if we have a report (simple heuristic)
-			if hist.Report != "" {
+			if hist.Message != "" {
 				for i := 0; i < len(p.StageNames); i++ {
 					p.WebServer.StageDone(i, "Loaded from history")
 				}
@@ -262,7 +262,7 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 				if err := storage.ReplaceTasks(repo, date, tasks); err != nil {
 					return err
 				}
-				return storage.SaveHistory(repo, date, report)
+				return storage.SaveHistory(repo, date, report, "assistant")
 			},
 		)
 	}
@@ -279,7 +279,7 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 	fmt.Println(report)
 
 	// Save History
-	if err := storage.SaveHistory(repoName, date, report); err != nil {
+	if err := storage.SaveHistory(repoName, date, report, "assistant"); err != nil {
 		errf("Warning: failed to save history for %s: %v", date, err)
 	}
 

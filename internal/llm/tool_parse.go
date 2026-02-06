@@ -8,6 +8,79 @@ import (
 
 func parseToolCallsFromText(text string) []ToolCall {
 	var calls []ToolCall
+	lines := strings.Split(text, "\n")
+
+	validTools := map[string]bool{
+		"create_task":          true,
+		"edit_task":            true,
+		"add_details":          true,
+		"add_time":             true,
+		"add_commit_reference": true,
+		"remove_task":          true,
+		"get_codebase_context": true,
+		"merge_tasks":          true,
+		"split_task":           true,
+	}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Strip leading $ or > (hallucinated CLI prompts)
+		if strings.HasPrefix(line, "$ ") || strings.HasPrefix(line, "> ") {
+			line = strings.TrimSpace(line[2:])
+		} else if strings.HasPrefix(line, "$") {
+			line = strings.TrimSpace(line[1:])
+		}
+
+		// 1. Try to find a tool name at the start of the line or after some space
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			continue
+		}
+
+		toolName := ""
+		paramsStr := ""
+
+		// Check if first word is a tool call like name(...)
+		first := parts[0]
+		if idx := strings.Index(first, "("); idx > 0 {
+			potentialName := first[:idx]
+			if validTools[potentialName] {
+				toolName = potentialName
+				// Find matching paren in the rest of the line
+				end, ok := findMatchingParen(line, strings.Index(line, "("))
+				if ok {
+					paramsStr = line[strings.Index(line, "(")+1 : end]
+				}
+			}
+		} else if validTools[first] {
+			toolName = first
+			paramsStr = strings.TrimSpace(line[len(first):])
+		}
+
+		if toolName != "" {
+			params := parseArgs(paramsStr)
+			params = normalizeToolParams(toolName, params)
+			calls = append(calls, ToolCall{
+				Tool:       toolName,
+				Parameters: params,
+			})
+		}
+	}
+
+	// Legacy fallback for embedded calls like "Inside some text tool(a=1) more text"
+	if len(calls) == 0 {
+		return parseToolCallsLegacy(text)
+	}
+
+	return calls
+}
+
+func parseToolCallsLegacy(text string) []ToolCall {
+	var calls []ToolCall
 	for i := 0; i < len(text); i++ {
 		if !isNameStart(text[i]) {
 			continue
@@ -146,12 +219,26 @@ func splitArgs(s string) []string {
 }
 
 func splitKeyVal(part string) (string, string, bool) {
+	key := ""
+	val := ""
+	ok := false
+
 	if idx := strings.Index(part, "="); idx >= 0 {
-		return strings.TrimSpace(part[:idx]), strings.TrimSpace(part[idx+1:]), true
+		key = strings.TrimSpace(part[:idx])
+		val = strings.TrimSpace(part[idx+1:])
+		ok = true
+	} else if idx := strings.Index(part, ":"); idx >= 0 {
+		key = strings.TrimSpace(part[:idx])
+		val = strings.TrimSpace(part[idx+1:])
+		ok = true
 	}
-	if idx := strings.Index(part, ":"); idx >= 0 {
-		return strings.TrimSpace(part[:idx]), strings.TrimSpace(part[idx+1:]), true
+
+	if ok {
+		// Strip leading dashes (CLI style)
+		key = strings.TrimLeft(key, "-")
+		return key, val, true
 	}
+
 	return "", "", false
 }
 

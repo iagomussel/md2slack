@@ -596,7 +596,7 @@ func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
 
 	report := ""
 	if hist, err := storage.LoadHistory(repoName, date); err == nil && hist != nil {
-		report = hist.Report
+		report = hist.Message
 	}
 
 	log.Printf("[handleLoadHistory] Loaded %d tasks for repo=%s, date=%s", len(tasks), repo, date)

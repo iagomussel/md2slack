@@ -765,9 +765,11 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				continue
 			}
 			newTask := gitdiff.TaskChange{
-				TaskIntent: intent,
-				Scope:      castString(params["scope"]),
-				TaskType:   castString(params["type"]),
+				TaskIntent:  intent,
+				Title:       castString(params["title"]),
+				Description: castString(params["description"]),
+				Scope:       castString(params["scope"]),
+				TaskType:    castString(params["type"]),
 			}
 			if newTask.TaskType == "" {
 				newTask.TaskType = "delivery"
@@ -787,6 +789,12 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 			}
 			if intent := castString(params["intent"]); intent != "" {
 				tasks[idx].TaskIntent = intent
+			}
+			if title := castString(params["title"]); title != "" {
+				tasks[idx].Title = title
+			}
+			if description := castString(params["description"]); description != "" {
+				tasks[idx].Description = description
 			}
 			if scope := castString(params["scope"]); scope != "" {
 				tasks[idx].Scope = scope
@@ -1372,6 +1380,15 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 		// If that didn't work, fall through to legacy JSON parsing
 	}
 
+	// Falls through if native tool calls were not found, but we might have text-based calls
+	if ptc, ok := target.(*[]ToolCall); ok && len(responseText) > 0 {
+		manualTools := parseToolCallsFromText(responseText)
+		if len(manualTools) > 0 {
+			*ptc = manualTools
+			return nil
+		}
+	}
+
 	clean := strings.TrimSpace(responseText)
 	clean = stripCodeFences(clean)
 	clean = extractJSONPayload(clean)
@@ -1435,22 +1452,22 @@ func extractJSONPayload(input string) string {
 		return input
 	}
 
-	firstObj := strings.Index(input, "{")
-	firstArr := strings.Index(input, "[")
+	for i := 0; i < len(input); i++ {
+		if input[i] == '{' || input[i] == '[' {
+			open := rune(input[i])
+			close := '}'
+			if open == '[' {
+				close = ']'
+			}
 
-	start := -1
-	end := -1
-
-	if firstArr >= 0 && (firstObj == -1 || firstArr < firstObj) {
-		start = firstArr
-		end = findMatchingEnd(input, start, '[', ']')
-	} else if firstObj >= 0 {
-		start = firstObj
-		end = findMatchingEnd(input, start, '{', '}')
-	}
-
-	if start >= 0 && end > start {
-		return input[start : end+1]
+			end := findMatchingEnd(input, i, open, close)
+			if end > i {
+				candidate := input[i : end+1]
+				if json.Valid([]byte(candidate)) {
+					return candidate
+				}
+			}
+		}
 	}
 
 	return input

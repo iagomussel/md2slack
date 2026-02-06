@@ -2,7 +2,7 @@ package storage
 
 import (
 	"database/sql"
-	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -44,11 +44,11 @@ func initDB() error {
 
 		schema := `
 		CREATE TABLE IF NOT EXISTS history (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id TEXT PRIMARY KEY,
 			repo_name TEXT,
 			date TEXT,
-			data TEXT,
-			report TEXT,
+			message TEXT,
+			role TEXT,
 			UNIQUE(repo_name, date)
 		);`
 		_, err = db.Exec(schema)
@@ -60,7 +60,15 @@ func initDB() error {
 			id TEXT PRIMARY KEY,
 			repo_name TEXT NOT NULL,
 			date TEXT NOT NULL,
-			task_json TEXT NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT NOT NULL,
+			status TEXT NOT NULL,
+			intents TEXT NOT NULL,
+			usernames TEXT NOT NULL,
+			commits TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			estimated_time INT NOT NULL,
+			type TEXT NOT NULL,
 			created_at TEXT DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 		);
@@ -79,28 +87,19 @@ func ResetForTest() {
 	dbOnce = sync.Once{}
 }
 
-func SaveHistoryDB(repoName string, date string, report string) error {
+func SaveHistoryDB(repoName string, date string, message string, role string) error {
 	if err := initDB(); err != nil {
 		return err
 	}
 
-	record := HistoryRecord{
-		Date:   date,
-		Report: report,
-	}
-
-	data, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-
-	_, err = db.Exec(`
-		INSERT INTO history (repo_name, date, data, report)
-		VALUES (?, ?, ?, ?)
+	_, err := db.Exec(`
+		INSERT INTO history (id, repo_name, date, message, role)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(repo_name, date) DO UPDATE SET
-			data = excluded.data,
-			report = excluded.report;
-	`, repoName, date, string(data), report)
+			message = excluded.message,
+			role = excluded.role;
+
+	`, fmt.Sprintf("%s-%s", repoName, date), repoName, date, message, role)
 
 	return err
 }
@@ -110,8 +109,8 @@ func LoadHistoryDB(repoName string, date string) (*HistoryRecord, error) {
 		return nil, err
 	}
 
-	var data, report string
-	err := db.QueryRow("SELECT data, report FROM history WHERE repo_name = ? AND date = ?", repoName, date).Scan(&data, &report)
+	var message, role string
+	err := db.QueryRow("SELECT message, role FROM history WHERE repo_name = ? AND date = ?", repoName, date).Scan(&message, &role)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -119,12 +118,10 @@ func LoadHistoryDB(repoName string, date string) (*HistoryRecord, error) {
 		return nil, err
 	}
 
-	var record HistoryRecord
-	if err := json.Unmarshal([]byte(data), &record); err != nil {
-		return nil, err
-	}
-	if record.Report == "" {
-		record.Report = report
+	record := HistoryRecord{
+		Date:    date,
+		Message: message,
+		Role:    role,
 	}
 
 	return &record, nil

@@ -26,20 +26,25 @@ Parameters (JSON):
   "title": "string - task title",
   "description": "string - detailed description", 
   "time_estimate": "string - e.g. '2h', '30m'",
-  "commits": ["array of commit hashes"],
+  "scope": "string - scope of the task",		
+  "type": "string - type of the task",
+  "estimated_hours": "float - estimated hours",
   "intent": "string - user's intended action",
-  "file_path": "string - associated file"
+  "status": "string - status of the task"
 }`
 }
 
 func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error) {
 	var params struct {
-		Title        string   `json:"title"`
-		Description  string   `json:"description"`
-		TimeEstimate string   `json:"time_estimate"`
-		Commits      []string `json:"commits"`
-		Intent       string   `json:"intent"`
-		FilePath     string   `json:"file_path"`
+		Title          string   `json:"title"`
+		Description    string   `json:"description"`
+		TimeEstimate   string   `json:"time_estimate"`
+		Commits        []string `json:"commits"`
+		Scope          string   `json:"scope"`
+		Type           string   `json:"type"`
+		EstimatedHours float64  `json:"estimated_hours"`
+		Intent         string   `json:"intent"`
+		Status         string   `json:"status"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
@@ -47,11 +52,18 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	newTask := gitdiff.TaskChange{
-		Title:        params.Title,
-		Description:  params.Description,
-		TimeEstimate: params.TimeEstimate,
-		TaskIntent:   params.Intent,
-		Commits:      params.Commits,
+		RepoName:       t.RepoName,
+		Date:           t.Date,
+		Title:          params.Title,
+		Description:    params.Description,
+		TimeEstimate:   params.TimeEstimate,
+		TaskIntent:     params.Intent,
+		Commits:        params.Commits,
+		Scope:          params.Scope,
+		TaskType:       params.Type,
+		EstimatedHours: params.EstimatedHours,
+		Intent:         params.Intent,
+		Status:         params.Status,
 	}
 	if newTask.TaskType == "" {
 		newTask.TaskType = "delivery"

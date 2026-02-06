@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -13,7 +12,12 @@ func LoadTasks(repoName string, date string) ([]gitdiff.TaskChange, error) {
 	if err := initDB(); err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT id, task_json FROM tasks WHERE repo_name = ? AND date = ? ORDER BY created_at ASC`, repoName, date)
+	// Select all columns
+	rows, err := db.Query(`
+		SELECT id, repo_name, date, title, description, status, intents, usernames, commits, scope, estimated_time, type 
+		FROM tasks 
+		WHERE repo_name = ? AND date = ? 
+		ORDER BY created_at ASC`, repoName, date)
 	if err != nil {
 		return nil, err
 	}
@@ -21,20 +25,31 @@ func LoadTasks(repoName string, date string) ([]gitdiff.TaskChange, error) {
 
 	var tasks []gitdiff.TaskChange
 	for rows.Next() {
-		var id string
-		var raw string
-		if err := rows.Scan(&id, &raw); err != nil {
+		var (
+			id, repo, d, title, desc, status, intent, users, commits, scope, taskType string
+			estTime                                                                   int
+		)
+		if err := rows.Scan(&id, &repo, &d, &title, &desc, &status, &intent, &users, &commits, &scope, &estTime, &taskType); err != nil {
 			return nil, err
 		}
-		var t gitdiff.TaskChange
-		if err := json.Unmarshal([]byte(raw), &t); err != nil {
-			// If JSON fails, skip or log? For now return error to be safe
-			return nil, err
+
+		t := gitdiff.TaskChange{
+			ID:             id,
+			RepoName:       repo,
+			Date:           d,
+			Title:          title,
+			Description:    desc,
+			Status:         status,
+			TaskIntent:     intent,
+			Usernames:      splitComma(users),
+			Commits:        splitComma(commits),
+			Scope:          scope,
+			EstimatedHours: float64(estTime),
+			TaskType:       taskType,
 		}
-		// Ensure ID matches DB ID
-		if t.ID == "" {
-			t.ID = id
-		}
+		// Legacy field mapping
+		t.Intent = t.TaskIntent
+
 		tasks = append(tasks, t)
 	}
 	if err := rows.Err(); err != nil {
@@ -47,16 +62,18 @@ func CreateTask(repoName string, date string, task gitdiff.TaskChange) (string, 
 	if err := initDB(); err != nil {
 		return "", nil, err
 	}
-	// Generate ID if missing (simple random string for now or UUID if import allowed, sticking to pseudo-random based on time/intent to avoid imports if not needed, but uuid is better. User provided example "hasdasdlkqoi22sda")
 	if task.ID == "" {
-		task.ID = fmt.Sprintf("task-%d", time.Now().UnixNano()) // Simple fallback
+		task.ID = fmt.Sprintf("task-%d", time.Now().UnixNano())
 	}
 
-	raw, err := json.Marshal(task)
-	if err != nil {
-		return "", nil, err
-	}
-	_, err = db.Exec(`INSERT INTO tasks (id, repo_name, date, task_json) VALUES (?, ?, ?, ?)`, task.ID, repoName, date, string(raw))
+	_, err := db.Exec(`
+		INSERT INTO tasks (
+			id, repo_name, date, title, description, status, intents, usernames, commits, scope, estimated_time, type
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, repoName, date,
+		task.Title, task.Description, task.Status, task.TaskIntent,
+		joinComma(task.Usernames), joinComma(task.Commits), task.Scope, int(task.EstimatedHours), task.TaskType,
+	)
 	if err != nil {
 		return "", nil, err
 	}
@@ -69,14 +86,16 @@ func UpdateTask(repoName string, date string, taskID string, task gitdiff.TaskCh
 	if err := initDB(); err != nil {
 		return nil, err
 	}
-	// Ensure task ID matches
 	task.ID = taskID
 
-	raw, err := json.Marshal(task)
-	if err != nil {
-		return nil, err
-	}
-	res, err := db.Exec(`UPDATE tasks SET task_json = ?, updated_at = CURRENT_TIMESTAMP WHERE repo_name = ? AND date = ? AND id = ?`, string(raw), repoName, date, taskID)
+	res, err := db.Exec(`
+		UPDATE tasks SET 
+			title = ?, description = ?, status = ?, intents = ?, usernames = ?, commits = ?, scope = ?, estimated_time = ?, type = ?, updated_at = CURRENT_TIMESTAMP 
+		WHERE repo_name = ? AND date = ? AND id = ?`,
+		task.Title, task.Description, task.Status, task.TaskIntent,
+		joinComma(task.Usernames), joinComma(task.Commits), task.Scope, int(task.EstimatedHours), task.TaskType,
+		repoName, date, taskID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -134,23 +153,26 @@ func ReplaceTasks(repoName string, date string, tasks []gitdiff.TaskChange) erro
 		_ = tx.Rollback()
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO tasks (id, repo_name, date, task_json) VALUES (?, ?, ?, ?)`)
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO tasks (
+			id, repo_name, date, title, description, status, intents, usernames, commits, scope, estimated_time, type
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	defer stmt.Close()
+
 	for _, task := range tasks {
-		// Ensure ID
 		if task.ID == "" {
-			task.ID = fmt.Sprintf("%s-%d", "task", time.Now().UnixNano()) // Simple ID generation
+			task.ID = fmt.Sprintf("%s-%d", "task", time.Now().UnixNano())
 		}
-		raw, mErr := json.Marshal(task)
-		if mErr != nil {
-			_ = tx.Rollback()
-			return mErr
-		}
-		if _, err = stmt.Exec(task.ID, repoName, date, string(raw)); err != nil {
+		if _, err = stmt.Exec(
+			task.ID, repoName, date,
+			task.Title, task.Description, task.Status, task.TaskIntent,
+			joinComma(task.Usernames), joinComma(task.Commits), task.Scope, int(task.EstimatedHours), task.TaskType,
+		); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -159,4 +181,19 @@ func ReplaceTasks(repoName string, date string, tasks []gitdiff.TaskChange) erro
 		return err
 	}
 	return nil
+}
+
+// Helpers
+func splitComma(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	return strings.Split(s, ",")
+}
+
+func joinComma(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return strings.Join(s, ",")
 }

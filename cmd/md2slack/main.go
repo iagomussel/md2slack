@@ -118,7 +118,7 @@ func main() {
 			if err := storage.ReplaceTasks(repo, date, tasks); err != nil {
 				return err
 			}
-			return storage.SaveHistory(repo, date, report)
+			return storage.SaveHistory(repo, date, report, "assistant")
 		},
 	)
 
@@ -139,7 +139,7 @@ func main() {
 					// Fallback to empty if load fails? Or just return error?
 					tasks = nil
 				}
-				return tasks, hist.Report, nil
+				return tasks, hist.Message, nil
 			},
 			func(repo string, date string) error {
 				repoName := gitdiff.GetRepoNameAt(repo)
