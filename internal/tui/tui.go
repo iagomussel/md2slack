@@ -226,7 +226,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
 	elapsed := time.Since(m.startTime).Truncate(time.Millisecond)
-	header := headerStyle.Render(fmt.Sprintf("md2slack • running • %s", elapsed))
+	header := headerStyle.Render(fmt.Sprintf("ss • running • %s", elapsed))
 
 	stageBox := renderStages(m.stages)
 	thinkingBox := renderThinking(thinkingFrames[m.frame])

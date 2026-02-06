@@ -27,7 +27,7 @@ func main() {
 	var web bool
 	var webAddr string
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode (don't send to Slack, print JSON)")
-	flag.BoolVar(&install, "install", false, "Install the binary to /usr/bin/md2slack")
+	flag.BoolVar(&install, "install", false, "Install the binary to /usr/bin/ss")
 	flag.BoolVar(&web, "web", false, "Enable web UI")
 	flag.StringVar(&webAddr, "web-addr", "127.0.0.1:8080", "Web UI address")
 	flag.Parse()
@@ -80,7 +80,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) < 1 && !web {
-		fmt.Println("usage: md2slack [--debug] [--web] [--web-addr host:port] [--install] [<MM-DD-YYYY>] [extra context]")
+		fmt.Println("usage: ss [--debug] [--web] [--web-addr host:port] [--install] [<MM-DD-YYYY>] [extra context]")
 		os.Exit(1)
 	}
 

@@ -386,7 +386,7 @@ const indexHTML = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>md2slack Web UI</title>
+  <title>ss Web UI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -960,7 +960,7 @@ const indexHTML = `<!doctype html>
         <div class="brand">
           <div class="brand-icon"></div>
           <div>
-            <h1>md2slack Web UI</h1>
+            <h1>ss Web UI</h1>
             <div id="meta" class="meta"></div>
           </div>
         </div>
