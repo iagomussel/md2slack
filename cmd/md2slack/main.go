@@ -27,7 +27,7 @@ func main() {
 	var web bool
 	var webAddr string
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode (don't send to Slack, print JSON)")
-	flag.BoolVar(&install, "install", false, "Install the binary to /usr/bin/ss")
+	flag.BoolVar(&install, "install", false, "Install the binary to ~/.md2slack/ssbot")
 	flag.BoolVar(&web, "web", false, "Enable web UI")
 	flag.StringVar(&webAddr, "web-addr", "127.0.0.1:8080", "Web UI address")
 	flag.Parse()
@@ -80,7 +80,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) < 1 && !web {
-		fmt.Println("usage: ss [--debug] [--web] [--web-addr host:port] [--install] [<MM-DD-YYYY>] [extra context]")
+		fmt.Println("usage: ssbot [--debug] [--web] [--web-addr host:port] [--install] [<MM-DD-YYYY>] [extra context]")
 		os.Exit(1)
 	}
 
@@ -219,126 +219,110 @@ func main() {
 			return
 		}
 
-		if debug {
-			fmt.Println("--- Git Diff Facts ---")
-			b, _ := json.MarshalIndent(output, "", "  ")
-			fmt.Println(string(b))
-		}
-
+		// --- STAGE 1: Extracting Intent (Parallel) ---
 		stageStart := time.Now()
 		if ui != nil {
 			ui.StageStart(0, "")
 		}
-		allowedCommits := make(map[string]struct{})
-		for _, c := range output.Commits {
-			allowedCommits[c.Hash] = struct{}{}
+		logf("Analyzing %d commits in parallel...", len(output.Commits))
+
+		type commitResult struct {
+			index int
+			cc    *gitdiff.CommitChange
+			err   error
 		}
+		results := make(chan commitResult, len(output.Commits))
+		for i, commit := range output.Commits {
+			go func(idx int, c gitdiff.Commit) {
+				var semantic gitdiff.CommitSemantic
+				for _, s := range output.Semantic {
+					if s.CommitHash == c.Hash {
+						semantic = s
+						break
+					}
+				}
+
+				cc, err := llm.ExtractCommitIntent(gitdiff.SemanticChange{
+					CommitHash: c.Hash,
+					Signals:    semantic.Signals,
+				}, c.Message, llmOpts)
+				if err != nil {
+					results <- commitResult{index: idx, err: err}
+					return
+				}
+				results <- commitResult{index: idx, cc: cc}
+			}(i, commit)
+		}
+
+		commitChanges := make([]gitdiff.CommitChange, len(output.Commits))
+		for i := 0; i < len(output.Commits); i++ {
+			res := <-results
+			if res.err != nil {
+				errf("Error analyzing commit: %v", res.err)
+				continue
+			}
+			commitChanges[res.index] = *res.cc
+		}
+
 		if ui != nil {
-			ui.StageDone(0, fmt.Sprintf("%d commits", len(output.Commits)))
+			ui.StageDone(0, fmt.Sprintf("%d analyzed", len(commitChanges)))
 		}
 		logf("Stage 1 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
+		// --- STAGE 2: Synthesizing Tasks ---
 		stageStart = time.Now()
 		if ui != nil {
 			ui.StageStart(1, "")
 		}
-		summaries, err := llm.SummarizeCommits(output.Commits, output.Diffs, output.Semantic, llmOpts)
-		if err != nil {
-			errf("Warning: failed to summarize commits: %v", err)
+		logf("Synthesizing tasks (Manual first, then Commits)...")
+
+		manualTasks, _ := llm.IncorporateExtraContext(output.Extra, llmOpts)
+		var commitTasks []gitdiff.TaskChange
+
+		allowedCommits := make(map[string]struct{})
+		for _, c := range output.Commits {
+			allowedCommits[c.Hash] = struct{}{}
 		}
-		output.Summaries = summaries
+
+		for i, cc := range commitChanges {
+			if cc.CommitHash == "" {
+				continue
+			}
+			logf("  [%d/%d] Incorporating commit %s...", i+1, len(commitChanges), cc.CommitHash)
+			updated, err := llm.IncorporateCommit(cc, commitTasks, manualTasks, output.Extra, llmOpts, allowedCommits)
+			if err != nil {
+				errf("Error incorporating commit %s: %v", cc.CommitHash, err)
+				continue
+			}
+			commitTasks = updated
+		}
+
+		allTasks := append([]gitdiff.TaskChange{}, manualTasks...)
+		allTasks = append(allTasks, commitTasks...)
+
 		if ui != nil {
-			ui.StageDone(1, fmt.Sprintf("%d summaries", len(summaries)))
+			ui.StageDone(1, fmt.Sprintf("%d tasks", len(allTasks)))
 		}
 		logf("Stage 2 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
+		// --- STAGE 3: Suggesting Next Actions ---
 		stageStart = time.Now()
 		if ui != nil {
 			ui.StageStart(2, "")
-		}
-		allTasks, err := llm.GenerateTasksFromContext(output.Commits, output.Summaries, output.Semantic, output.Extra, llmOpts, allowedCommits)
-		if err != nil {
-			errf("Warning: failed to generate tasks: %v", err)
-		}
-		if ui != nil {
-			ui.StageDone(2, fmt.Sprintf("%d tasks", len(allTasks)))
-		}
-		logf("Stage 3 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
-
-		stageStart = time.Now()
-		if ui != nil {
-			ui.StageStart(3, "")
-		}
-		allTasks, err = llm.ReviewTasks(allTasks, output.Commits, output.Summaries, output.Semantic, output.Extra, llmOpts, allowedCommits)
-		if err != nil {
-			errf("Warning: failed to review tasks: %v", err)
-		}
-		if ui != nil {
-			ui.StageDone(3, fmt.Sprintf("%d tasks", len(allTasks)))
-		}
-		if webServer != nil {
-			webServer.SetTasks(allTasks, nil)
-			webServer.SetReport(renderer.RenderReport(date, nil, allTasks, nil))
-		} else if ui != nil {
-			ui.Status(renderer.RenderReport(date, nil, allTasks, nil))
-		}
-		logf("Stage 4 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
-
-		stageStart = time.Now()
-		refinedTasks, err := llm.RefineTasks(allTasks, llmOpts)
-		if err != nil {
-			errf("Warning: failed to refine tasks: %v", err)
-		} else if len(refinedTasks) > 0 {
-			allTasks = refinedTasks
-		}
-		if webServer != nil {
-			webServer.SetTasks(allTasks, nil)
-			webServer.SetReport(renderer.RenderReport(date, nil, allTasks, nil))
-		} else if ui != nil {
-			ui.Status(renderer.RenderReport(date, nil, allTasks, nil))
-		}
-		logf("Stage 4.5 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
-
-		if len(allTasks) == 0 && len(output.Summaries) > 0 {
-			errf("Warning: no tasks synthesized, falling back to summary-based tasks")
-			allTasks = llm.FallbackTasksFromSummaries(output.Summaries)
-		}
-
-		if len(allTasks) == 0 {
-			errf("Warning: no tasks synthesized for %s; emitting fallback task", date)
-			allTasks = []gitdiff.TaskChange{
-				{
-					TaskType:     "chore",
-					TaskIntent:   "No qualifying commits for the day",
-					Scope:        "daily-report",
-					TechnicalWhy: "No commit summaries or tasks could be synthesized for the selected date.",
-					IsManual:     true,
-				},
-			}
-		}
-
-		stageStart = time.Now()
-		if ui != nil {
-			ui.StageStart(4, "")
 		}
 		nextActions, err := llm.SuggestNextActions(allTasks, llmOpts)
 		if err != nil {
 			errf("Warning: failed to suggest next actions: %v", err)
 		}
 		if ui != nil {
-			ui.StageDone(4, fmt.Sprintf("%d actions", len(nextActions)))
+			ui.StageDone(2, fmt.Sprintf("%d actions", len(nextActions)))
 		}
-		if webServer != nil {
-			webServer.SetTasks(allTasks, nextActions)
-			webServer.SetReport(renderer.RenderReport(date, nil, allTasks, nextActions))
-		} else if ui != nil {
-			ui.Status(renderer.RenderReport(date, nil, allTasks, nextActions))
-		}
-		logf("Stage 5 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+		logf("Stage 3 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 
+		// --- STAGE 4: Finalizing Report ---
 		stageStart = time.Now()
 		if ui != nil {
-			ui.StageStart(5, "")
+			ui.StageStart(3, "")
 		}
 		report := renderer.RenderReport(date, nil, allTasks, nextActions)
 		if webServer != nil {
@@ -356,26 +340,30 @@ func main() {
 					return llm.RefineTasksWithPrompt(tasks, prompt, llmOpts)
 				},
 				func(date string, tasks []gitdiff.TaskChange, report string) error {
-					return storage.SaveHistory(repoName, date, tasks, nil, output.Summaries, report)
+					return storage.SaveHistory(repoName, date, tasks, nil, nil, report)
 				},
 			)
 			webServer.SetActionHandler(func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
 				return llm.EditTasksWithAction(tasks, action, selected, llmOpts)
 			})
 		}
+
 		if ui != nil {
-			ui.StageDone(5, "ready")
-			ui.Stop()
-			ui = nil
+			ui.StageDone(3, "ready")
+			if webServer == nil {
+				ui.Stop()
+				ui = nil
+			}
 		}
-		logf("Stage 6 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
+		logf("Stage 4 done in %s", time.Since(stageStart).Truncate(time.Millisecond))
 		fmt.Println("\n--- FINAL REPORT ---")
 		fmt.Println(report)
 
-		// Save History for the NEXT run
-		if err := storage.SaveHistory(repoName, date, allTasks, nil, output.Summaries, report); err != nil {
+		// Save History
+		if err := storage.SaveHistory(repoName, date, allTasks, nil, nil, report); err != nil {
 			errf("Warning: failed to save history for %s: %v", date, err)
 		}
+
 		if debug {
 			fmt.Println("--- LLM Report ---")
 			fmt.Println(report)

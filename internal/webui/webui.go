@@ -179,6 +179,7 @@ func (s *Server) startHTTP() {
 	mux.HandleFunc("/action", s.handleAction)
 	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/scan-users", s.handleScanUsers)
+	mux.HandleFunc("/recent-activity", s.handleRecentActivity)
 
 	srv := &http.Server{
 		Addr:    s.addr,
@@ -374,14 +375,24 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		cwd, _ := os.Getwd()
 		isRepo := gitdiff.GetRepoNameAt(cwd) != "unknown"
-		settings.ProjectPaths = ensureDefaultProjectPath(settings.ProjectPaths, cwd, isRepo)
+		before := normalizeList(settings.ProjectPaths)
+		settings.ProjectPaths = ensureDefaultProjectPath(before, cwd, isRepo)
+		if !equalStringSlices(before, settings.ProjectPaths) {
+			_ = saveSettings("", settings)
+		}
 		projects := buildProjectInfo(settings.ProjectPaths)
+		currentProject := ""
+		if isRepo {
+			currentProject = cwd
+		}
 		payload := struct {
-			Settings Settings      `json:"settings"`
-			Projects []ProjectInfo `json:"projects"`
+			Settings       Settings      `json:"settings"`
+			Projects       []ProjectInfo `json:"projects"`
+			CurrentProject string        `json:"current_project"`
 		}{
-			Settings: settings,
-			Projects: projects,
+			Settings:       settings,
+			Projects:       projects,
+			CurrentProject: currentProject,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(payload)
@@ -397,15 +408,23 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		settings := Settings{ProjectPaths: payload.ProjectPaths, Usernames: payload.Usernames}
+		cwd, _ := os.Getwd()
+		isRepo := gitdiff.GetRepoNameAt(cwd) != "unknown"
+		settings.ProjectPaths = ensureDefaultProjectPath(settings.ProjectPaths, cwd, isRepo)
 		if err := saveSettings("", settings); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		projects := buildProjectInfo(settings.ProjectPaths)
+		currentProject := ""
+		if isRepo {
+			currentProject = cwd
+		}
 		resp := struct {
-			Settings Settings      `json:"settings"`
-			Projects []ProjectInfo `json:"projects"`
-		}{Settings: settings, Projects: projects}
+			Settings       Settings      `json:"settings"`
+			Projects       []ProjectInfo `json:"projects"`
+			CurrentProject string        `json:"current_project"`
+		}{Settings: settings, Projects: projects, CurrentProject: currentProject}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 		return
@@ -439,6 +458,24 @@ func (s *Server) handleScanUsers(w http.ResponseWriter, r *http.Request) {
 	resp := struct {
 		Usernames []string `json:"usernames"`
 	}{Usernames: users}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleRecentActivity(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	dates, err := gitdiff.GetRecentCommitDays(path, 30) // Last 30 days
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := struct {
+		Dates []string `json:"dates"`
+	}{Dates: dates}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -927,6 +964,66 @@ const indexHTML = `<!doctype html>
       margin-top: 12px;
     }
 
+    .action-menu {
+      position: relative;
+      display: inline-flex;
+    }
+
+    .menu-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .menu-list {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      min-width: 200px;
+      background: #111821;
+      border: 1px solid var(--line-1);
+      border-radius: 12px;
+      padding: 8px;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      box-shadow: var(--shadow-1);
+      z-index: 20;
+    }
+
+    .menu-list.show {
+      display: flex;
+    }
+
+    .menu-item {
+      text-align: left;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-1);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .menu-item:hover {
+      background: rgba(255, 176, 74, 0.1);
+      border-color: rgba(255, 176, 74, 0.35);
+      color: var(--amber-400);
+    }
+
+    .menu-item.danger {
+      color: #ffb3b3;
+    }
+
+    .menu-item[disabled] {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
     .editor-card {
       border-radius: 14px;
       border: 1px solid var(--line-1);
@@ -1123,6 +1220,10 @@ const indexHTML = `<!doctype html>
       box-shadow: var(--shadow-1);
     }
 
+    .modal.task-modal {
+      width: min(680px, 92vw);
+    }
+
     .modal h3 {
       margin: 0 0 10px;
       font-family: "Rajdhani", "IBM Plex Sans", sans-serif;
@@ -1177,6 +1278,10 @@ const indexHTML = `<!doctype html>
             <div class="panel-header">Stages <span class="led"></span></div>
             <ul id="stages" class="stages"></ul>
           </div>
+          <div class="panel" style="--delay: 0.07s">
+            <div class="panel-header">Recent Activity <span class="led"></span></div>
+            <div id="recent-dates" class="task-list" style="max-height: 240px; overflow-y: auto; padding-right: 4px;"></div>
+          </div>
           <div class="panel" style="--delay: 0.1s">
             <div class="panel-header">Status <span class="led"></span></div>
             <div id="status" class="status-line"></div>
@@ -1200,38 +1305,25 @@ const indexHTML = `<!doctype html>
 
             <div class="panel-grid">
               <div class="stack">
-                <div class="panel-header">Task List <span class="led"></span></div>
-                <div id="task-list" class="task-list"></div>
-                <div class="action-grid">
-                  <button class="btn btn-primary" id="action-merge">Merge</button>
-                  <button class="btn btn-secondary" id="action-split">Split</button>
-                  <button class="btn btn-secondary" id="action-longer">Make longer</button>
-                  <button class="btn btn-secondary" id="action-shorter">Make shorter</button>
-                  <button class="btn btn-secondary" id="action-improve">Improve text</button>
-                  <button class="btn btn-danger" id="action-remove">Remove</button>
-                </div>
-              </div>
-
-              <div class="stack">
-                <div class="panel-header">Editor <span class="led"></span></div>
-                <div class="editor-card">
-                  <label>Title</label>
-                  <input id="edit-intent" class="input" />
-                  <label>Time (hours)</label>
-                  <input id="edit-hours" type="number" min="0" class="input" />
-                  <label>Status</label>
-                  <select id="edit-status" class="select">
-                    <option value="done">done</option>
-                    <option value="inprogress">inprogress</option>
-                    <option value="onhold">onhold</option>
-                  </select>
-                  <label>Description</label>
-                  <textarea id="edit-desc" class="textarea"></textarea>
-                  <div class="editor-actions">
-                    <button class="btn btn-primary" id="save-task">Save task</button>
-                    <button class="btn btn-secondary" id="new-task">New task</button>
+                <div class="toolbar">
+                  <div class="panel-header">Task List <span class="led"></span></div>
+                  <div class="workspace-row">
+                    <button class="btn btn-secondary" id="edit-task" data-testid="edit-task">Edit</button>
+                    <button class="btn btn-secondary" id="new-task" data-testid="new-task">New</button>
+                    <div class="action-menu" id="action-menu">
+                      <button class="btn btn-primary menu-button" id="action-button" data-testid="action-button">Actions ▾</button>
+                      <div class="menu-list" id="action-list" data-testid="action-list">
+                        <button class="menu-item" data-action="merge_tasks">Merge</button>
+                        <button class="menu-item" data-action="split_task">Split</button>
+                        <button class="menu-item" data-action="make_longer">Make longer</button>
+                        <button class="menu-item" data-action="make_shorter">Make shorter</button>
+                        <button class="menu-item" data-action="improve_text">Improve text</button>
+                        <button class="menu-item danger" data-action="remove">Remove</button>
+                      </div>
+                    </div>
                   </div>
                 </div>
+                <div id="task-list" class="task-list"></div>
               </div>
             </div>
           </div>
@@ -1239,6 +1331,10 @@ const indexHTML = `<!doctype html>
           <div class="panel" style="--delay: 0.12s">
             <div class="panel-header">Tasks (Preview) <span class="led"></span></div>
             <div id="tasks" class="preview-body"></div>
+          </div>
+          <div class="panel" style="--delay: 0.14s">
+            <div class="panel-header">What do you plan to do next? <span class="led"></span></div>
+            <div id="next-actions" class="preview-body" style="max-height: 200px;"></div>
           </div>
         </section>
 
@@ -1263,6 +1359,28 @@ const indexHTML = `<!doctype html>
     </div>
   </div>
 
+  <div class="modal-backdrop" id="task-modal" data-testid="task-modal">
+    <div class="modal task-modal">
+      <h3 id="task-modal-title">Task Editor</h3>
+      <label class="meta">Title</label>
+      <input id="edit-intent" class="input" placeholder="Task title" data-testid="task-intent" />
+      <label class="meta">Time (hours)</label>
+      <input id="edit-hours" class="input" type="number" min="0" step="1" placeholder="1" data-testid="task-hours" />
+      <label class="meta">Status</label>
+      <select id="edit-status" class="select" data-testid="task-status">
+        <option value="done">done</option>
+        <option value="in_progress">in_progress</option>
+        <option value="blocked">blocked</option>
+      </select>
+      <label class="meta">Description</label>
+      <textarea id="edit-desc" class="input" rows="6" placeholder="Details" data-testid="task-desc"></textarea>
+      <div class="editor-actions">
+        <button class="btn btn-primary" id="save-task" data-testid="task-save">Save task</button>
+        <button class="btn btn-secondary" id="cancel-task" data-testid="task-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const state = {
       editingDate: false,
@@ -1273,6 +1391,8 @@ const indexHTML = `<!doctype html>
       projects: [],
       selectedProject: '',
       selectedUser: '',
+      currentProject: '',
+      modal: { mode: null, draftIndex: null, draft: null },
     };
 
     function escapeHtml(str) {
@@ -1331,6 +1451,10 @@ const indexHTML = `<!doctype html>
           projectSelect.appendChild(opt);
         });
       }
+      const projectPaths = projects.map(p => p.path);
+      if ((!state.selectedProject || !projectPaths.includes(state.selectedProject)) && state.currentProject) {
+        state.selectedProject = state.currentProject;
+      }
       if (!state.selectedProject && projects.length) {
         state.selectedProject = projects[0].path;
       }
@@ -1363,7 +1487,39 @@ const indexHTML = `<!doctype html>
       const data = await res.json();
       state.settings = data.settings || { project_paths: [], usernames: [] };
       state.projects = data.projects || [];
+      state.currentProject = data.current_project || state.currentProject;
       renderWorkspace();
+      loadRecentActivity();
+    }
+
+    async function loadRecentActivity() {
+      if (!state.selectedProject) return;
+      const res = await fetch('/recent-activity?path=' + encodeURIComponent(state.selectedProject));
+      if (!res.ok) return;
+      const data = await res.json();
+      const el = document.getElementById('recent-dates');
+      el.innerHTML = '';
+      if (!data.dates || data.dates.length === 0) {
+        el.innerHTML = '<div class="task-meta">(none)</div>';
+        return;
+      }
+      data.dates.forEach(d => {
+        const row = document.createElement('div');
+        row.className = 'task-row';
+        row.style.padding = '8px 10px';
+        row.style.marginBottom = '4px';
+        const title = document.createElement('div');
+        title.className = 'task-title';
+        title.style.fontSize = '12px';
+        title.textContent = toMDYDate(d);
+        row.appendChild(title);
+        row.onclick = () => {
+          document.getElementById('date').value = d;
+          state.editingDate = true;
+          setTimeout(() => state.editingDate = false, 500);
+        };
+        el.appendChild(row);
+      });
     }
 
     async function saveSettings() {
@@ -1375,6 +1531,7 @@ const indexHTML = `<!doctype html>
       if (data) {
         state.settings = data.settings || state.settings;
         state.projects = data.projects || state.projects;
+        state.currentProject = data.current_project || state.currentProject;
         renderWorkspace();
       }
     }
@@ -1395,6 +1552,7 @@ const indexHTML = `<!doctype html>
         cb.checked = state.selected.has(i);
         cb.addEventListener('change', () => {
           if (cb.checked) state.selected.add(i); else state.selected.delete(i);
+          updateActionMenuState();
         });
         const body = document.createElement('div');
         body.className = "flex-1";
@@ -1411,6 +1569,7 @@ const indexHTML = `<!doctype html>
         wrap.appendChild(body);
         el.appendChild(wrap);
       });
+      updateActionMenuState();
     }
 
     function renderTasksPreview(tasks) {
@@ -1449,14 +1608,74 @@ const indexHTML = `<!doctype html>
       el.innerHTML = html;
     }
 
+    function renderNextActions(actions) {
+      const el = document.getElementById('next-actions');
+      if (!el) return;
+      if (!actions || actions.length === 0) {
+        el.innerHTML = '<em>(none)</em>';
+        return;
+      }
+      let html = '<ul style="padding-left: 20px; font-size: 13px; color: var(--text-1);">';
+      actions.forEach(a => {
+        html += '<li style="margin-bottom: 6px;">' + escapeHtml(a) + '</li>';
+      });
+      html += '</ul>';
+      el.innerHTML = html;
+    }
+
+    function setTaskForm(task) {
+      document.getElementById('edit-intent').value = task.task_intent || '';
+      document.getElementById('edit-hours').value = task.estimated_hours || '';
+      document.getElementById('edit-status').value = task.status || 'done';
+      document.getElementById('edit-desc').value = task.technical_why || '';
+    }
+
+    function getTaskForm() {
+      const hours = parseInt(document.getElementById('edit-hours').value, 10);
+      return {
+        task_intent: document.getElementById('edit-intent').value.trim(),
+        estimated_hours: Number.isNaN(hours) ? null : hours,
+        status: document.getElementById('edit-status').value,
+        technical_why: document.getElementById('edit-desc').value.trim(),
+      };
+    }
+
+    function openTaskModal(mode, index) {
+      const modal = document.getElementById('task-modal');
+      const title = document.getElementById('task-modal-title');
+      if (mode === 'edit') {
+        const t = state.tasks[index];
+        if (!t) return;
+        state.modal = { mode: 'edit', draftIndex: index, draft: null };
+        title.textContent = 'Edit Task';
+        setTaskForm(t);
+      } else {
+        const draft = {
+          task_type: 'delivery',
+          task_intent: '',
+          scope: '',
+          commits: [],
+          estimated_hours: 1,
+          technical_why: '',
+          status: 'done'
+        };
+        state.modal = { mode: 'new', draftIndex: null, draft };
+        title.textContent = 'New Task';
+        setTaskForm(draft);
+      }
+      modal.classList.add('active');
+    }
+
+    function closeTaskModal() {
+      document.getElementById('task-modal').classList.remove('active');
+      state.modal = { mode: null, draftIndex: null, draft: null };
+    }
+
     function selectActive(index) {
       state.activeIndex = index;
       const t = state.tasks[index];
       if (!t) return;
-      document.getElementById('edit-intent').value = t.task_intent || '';
-      document.getElementById('edit-hours').value = t.estimated_hours || '';
-      document.getElementById('edit-status').value = t.status || 'done';
-      document.getElementById('edit-desc').value = t.technical_why || '';
+      setTaskForm(t);
       renderTaskList(state.tasks);
     }
 
@@ -1469,6 +1688,7 @@ const indexHTML = `<!doctype html>
       state.tasks = data.tasks || [];
       renderTaskList(state.tasks);
       renderTasksPreview(state.tasks);
+      renderNextActions(data.next_actions || []);
       const dateInput = document.getElementById('date');
       if (!state.editingDate && dateInput) {
         dateInput.value = toISODate(data.date || '');
@@ -1506,6 +1726,7 @@ const indexHTML = `<!doctype html>
 
     document.getElementById('project-select').addEventListener('change', (e) => {
       state.selectedProject = e.target.value;
+      loadRecentActivity();
     });
 
     document.getElementById('user-select').addEventListener('change', (e) => {
@@ -1561,38 +1782,58 @@ const indexHTML = `<!doctype html>
     });
 
     document.getElementById('save-task').addEventListener('click', async () => {
-      if (state.activeIndex === null) return;
-      const t = state.tasks[state.activeIndex];
-      if (!t) return;
-      t.task_intent = document.getElementById('edit-intent').value.trim();
-      const hours = parseInt(document.getElementById('edit-hours').value, 10);
-      t.estimated_hours = Number.isNaN(hours) ? null : hours;
-      t.status = document.getElementById('edit-status').value;
-      t.technical_why = document.getElementById('edit-desc').value.trim();
+      const updates = getTaskForm();
+      if (state.modal.mode === 'edit') {
+        if (state.activeIndex === null) return;
+        const t = state.tasks[state.activeIndex];
+        if (!t) return;
+        t.task_intent = updates.task_intent;
+        t.estimated_hours = updates.estimated_hours;
+        t.status = updates.status;
+        t.technical_why = updates.technical_why;
+      }
+      if (state.modal.mode === 'new') {
+        const base = state.modal.draft || {
+          task_type: 'delivery',
+          scope: '',
+          commits: [],
+          estimated_hours: 1,
+          technical_why: '',
+          status: 'done'
+        };
+        const next = {
+          ...base,
+          task_intent: updates.task_intent,
+          estimated_hours: updates.estimated_hours,
+          status: updates.status,
+          technical_why: updates.technical_why,
+        };
+        state.tasks.push(next);
+        state.activeIndex = state.tasks.length - 1;
+      }
       await saveTasks();
       renderTaskList(state.tasks);
       renderTasksPreview(state.tasks);
+      if (state.activeIndex !== null) {
+        selectActive(state.activeIndex);
+      }
+      closeTaskModal();
     });
 
-    document.getElementById('new-task').addEventListener('click', async () => {
-      const t = {
-        task_type: 'delivery',
-        task_intent: 'New task',
-        scope: '',
-        commits: [],
-        estimated_hours: 1,
-        technical_why: '',
-        status: 'done'
-      };
-      state.tasks.push(t);
-      state.activeIndex = state.tasks.length - 1;
-      await saveTasks();
-      renderTaskList(state.tasks);
-      renderTasksPreview(state.tasks);
-      selectActive(state.activeIndex);
+    document.getElementById('new-task').addEventListener('click', () => {
+      openTaskModal('new');
     });
 
-    document.getElementById('action-remove').addEventListener('click', async () => {
+    document.getElementById('edit-task').addEventListener('click', () => {
+      if (state.activeIndex === null) return alert('Select a task to edit.');
+      openTaskModal('edit', state.activeIndex);
+    });
+
+    document.getElementById('cancel-task').addEventListener('click', () => {
+      closeTaskModal();
+    });
+
+    async function removeSelectedTasks() {
       const selected = Array.from(state.selected).sort((a,b) => b - a);
       if (selected.length === 0) return alert('Selecione tasks para remover.');
       selected.forEach(i => state.tasks.splice(i, 1));
@@ -1601,7 +1842,7 @@ const indexHTML = `<!doctype html>
       await saveTasks();
       renderTaskList(state.tasks);
       renderTasksPreview(state.tasks);
-    });
+    }
 
     async function runAction(action) {
       const selected = Array.from(state.selected);
@@ -1618,11 +1859,57 @@ const indexHTML = `<!doctype html>
       }
     }
 
-    document.getElementById('action-merge').addEventListener('click', () => runAction('merge_tasks'));
-    document.getElementById('action-split').addEventListener('click', () => runAction('split_task'));
-    document.getElementById('action-longer').addEventListener('click', () => runAction('make_longer'));
-    document.getElementById('action-shorter').addEventListener('click', () => runAction('make_shorter'));
-    document.getElementById('action-improve').addEventListener('click', () => runAction('improve_text'));
+    const actionMenu = document.getElementById('action-menu');
+    const actionButton = document.getElementById('action-button');
+    const actionList = document.getElementById('action-list');
+
+    function updateActionMenuState() {
+      const count = state.selected.size;
+      const rules = {
+        merge_tasks: count >= 2,
+        split_task: count === 1,
+        make_longer: count >= 1,
+        make_shorter: count >= 1,
+        improve_text: count >= 1,
+        remove: count >= 1,
+      };
+      actionList.querySelectorAll('[data-action]').forEach(item => {
+        const action = item.dataset.action;
+        item.disabled = !rules[action];
+      });
+    }
+
+    function toggleActionMenu() {
+      actionList.classList.toggle('show');
+      updateActionMenuState();
+    }
+
+    function closeActionMenu() {
+      actionList.classList.remove('show');
+    }
+
+    actionButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleActionMenu();
+    });
+
+    actionList.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-action]');
+      if (!target || target.disabled) return;
+      const action = target.dataset.action;
+      closeActionMenu();
+      if (action === 'remove') {
+        removeSelectedTasks();
+      } else {
+        runAction(action);
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      if (!actionMenu.contains(event.target)) {
+        closeActionMenu();
+      }
+    });
 
     loadSettings();
     loadState();

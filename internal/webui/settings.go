@@ -100,6 +100,18 @@ func normalizeList(values []string) []string {
 	return out
 }
 
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func ensureDefaultProjectPath(paths []string, defaultPath string, isRepo bool) []string {
 	paths = normalizeList(paths)
 	if !isRepo || strings.TrimSpace(defaultPath) == "" {

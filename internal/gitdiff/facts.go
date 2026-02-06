@@ -174,3 +174,19 @@ func buildRawDiffCommand(hash string) string {
 	}
 	return sb.String()
 }
+
+func GetRecentCommitDays(repoPath string, days int) ([]string, error) {
+	raw, err := runGit(repoPath, fmt.Sprintf(`git log --all --format="%%ad" --date=short --since="%d days ago" | sort -u -r`, days))
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(raw, "\n")
+	var dates []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			dates = append(dates, l)
+		}
+	}
+	return dates, nil
+}

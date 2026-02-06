@@ -31,3 +31,15 @@ func TestIndexHTMLUsesSSBranding(t *testing.T) {
 		t.Fatal("expected ss Web UI header")
 	}
 }
+
+func TestIndexHTMLHasTaskModal(t *testing.T) {
+	if !strings.Contains(indexHTML, "id=\"task-modal\"") {
+		t.Fatal("expected task modal container")
+	}
+}
+
+func TestIndexHTMLHasActionsMenu(t *testing.T) {
+	if !strings.Contains(indexHTML, "id=\"action-menu\"") {
+		t.Fatal("expected actions dropdown")
+	}
+}
