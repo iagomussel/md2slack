@@ -173,8 +173,20 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 	}
 	logf("Generating tasks (Manual first, then Commits)...")
 
+	var allTasks []gitdiff.TaskChange
+	if p.WebServer != nil {
+		allTasks = p.WebServer.GetTasks()
+		// Filter out manual tasks as they will be re-added from current context
+		var filtered []gitdiff.TaskChange
+		for _, t := range allTasks {
+			if !t.IsManual {
+				filtered = append(filtered, t)
+			}
+		}
+		allTasks = filtered
+	}
+
 	manualTasks, _ := llm.IncorporateExtraContext(output.Extra, localLLMOpts)
-	var commitTasks []gitdiff.TaskChange
 
 	allowedCommits := make(map[string]struct{})
 	for _, c := range output.Commits {
@@ -186,16 +198,16 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 			continue
 		}
 		logf("  [%d/%d] Incorporating commit %s...", i+1, len(commitChanges), cc.CommitHash)
-		updated, err := llm.IncorporateCommit(cc, commitTasks, manualTasks, output.Extra, localLLMOpts, allowedCommits)
+		updated, err := llm.IncorporateCommit(cc, allTasks, manualTasks, output.Extra, localLLMOpts, allowedCommits)
 		if err != nil {
 			errf("Error incorporating commit %s: %v", cc.CommitHash, err)
 			continue
 		}
-		commitTasks = updated
+		allTasks = updated
 	}
 
-	allTasks := append([]gitdiff.TaskChange{}, manualTasks...)
-	allTasks = append(allTasks, commitTasks...)
+	// Merge new manual tasks if any
+	allTasks = append(allTasks, manualTasks...)
 
 	if ui != nil {
 		ui.StageDone(2, fmt.Sprintf("%d tasks", len(allTasks)))
@@ -208,9 +220,9 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 		ui.StageStart(3, "")
 	}
 	logf("Reviewing and refining tasks...")
-	allTasks, err = llm.RefineTasks(allTasks, localLLMOpts)
+	allTasks, err = llm.ReviewTasks(allTasks, output.Commits, output.Summaries, output.Semantic, output.Extra, localLLMOpts, allowedCommits)
 	if err != nil {
-		errf("Warning: task refinement failed: %v", err)
+		errf("Warning: task review failed: %v", err)
 	}
 	if ui != nil {
 		ui.StageDone(3, "Refined")

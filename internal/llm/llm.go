@@ -1258,7 +1258,13 @@ func callJSON(messages []OpenAIMessage, system string, options LLMOptions, targe
 		}
 
 		// If the LLM returned a text response AND tool calls, we want both.
-		// We'll try to marshal them into a JSON object that matches ChatOutput.
+		// Check if target is a pointer to []ToolCall
+		if ptc, ok := target.(*[]ToolCall); ok {
+			*ptc = nativeTools
+			return nil
+		}
+
+		// Fallback to wrapped object for ChatOutput (or others)
 		type tempOutput struct {
 			Text  string     `json:"text"`
 			Tools []ToolCall `json:"tools"`

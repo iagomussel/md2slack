@@ -131,13 +131,12 @@ func (s *Server) Reset(stageNames []string, date string, repo string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = State{
-		Repo:   repo,
-		Date:   date,
-		Stages: stages,
-		Logs:   nil,
-		Errors: nil,
-	}
+	s.state.Repo = repo
+	s.state.Date = date
+	s.state.Stages = stages
+	s.state.Logs = nil
+	s.state.Errors = nil
+	s.state.StatusLine = ""
 }
 
 func (s *Server) StageStart(idx int, name string) {
@@ -190,6 +189,12 @@ func (s *Server) Status(line string) {
 
 func (s *Server) Stop() {
 	// No-op for now
+}
+
+func (s *Server) GetTasks() []gitdiff.TaskChange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]gitdiff.TaskChange{}, s.state.Tasks...)
 }
 
 func (s *Server) SetTasks(tasks []gitdiff.TaskChange, nextActions []string) {

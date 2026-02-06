@@ -304,7 +304,7 @@
 			class="h-16 border-b border-white/10 flex items-center justify-between px-8 shrink-0 bg-[#0d1117]"
 		>
 			<div class="flex items-center gap-4">
-				<h1 class="text-lg font-bold">Daily Report</h1>
+				<img src="/logo.png" alt="ssbot logo" class="h-6" />
 				<button
 					onclick={() => (isChatOpen = !isChatOpen)}
 					class="px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all flex items-center gap-2"
