@@ -184,9 +184,14 @@ func (s *Server) Stop() {
 
 func (s *Server) SetTasks(tasks []gitdiff.TaskChange, nextActions []string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	date := s.state.Date
 	s.state.Tasks = tasks
 	s.state.NextActions = nextActions
+	s.mu.Unlock()
+
+	// Automatically re-generate report whenever tasks change
+	report := renderer.RenderReport(date, nil, tasks, nextActions)
+	s.SetReport(report)
 }
 
 func (s *Server) SetReport(report string) {
@@ -198,17 +203,17 @@ func (s *Server) SetReport(report string) {
 
 func (s *Server) startHTTP() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/state", s.handleState)
-	mux.HandleFunc("/tasks", s.handleTasks)
-	mux.HandleFunc("/refine", s.handleRefine)
-	mux.HandleFunc("/send", s.handleSend)
-	mux.HandleFunc("/run", s.handleRun)
-	mux.HandleFunc("/action", s.handleAction)
-	mux.HandleFunc("/chat", s.handleChat)
-	mux.HandleFunc("/update-task", s.handleUpdateTask)
-	mux.HandleFunc("/settings", s.handleSettings)
-	mux.HandleFunc("/scan-users", s.handleScanUsers)
-	mux.HandleFunc("/recent-activity", s.handleRecentActivity)
+	mux.HandleFunc("/api/state", s.handleState)
+	mux.HandleFunc("/api/tasks", s.handleTasks)
+	mux.HandleFunc("/api/refine", s.handleRefine)
+	mux.HandleFunc("/api/send", s.handleSend)
+	mux.HandleFunc("/api/run", s.handleRun)
+	mux.HandleFunc("/api/action", s.handleAction)
+	mux.HandleFunc("/api/chat", s.handleChat)
+	mux.HandleFunc("/api/update-task", s.handleUpdateTask)
+	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/scan-users", s.handleScanUsers)
+	mux.HandleFunc("/api/recent-activity", s.handleRecentActivity)
 	mux.HandleFunc("/api/git-graph", s.handleGitGraph)
 
 	sub, _ := fs.Sub(distFS, "dist")
@@ -279,10 +284,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	s.SetTasks(payload.Tasks, nextActions)
-	report := renderer.RenderReport(date, nil, payload.Tasks, nextActions)
-	s.SetReport(report)
 	if s.onSave != nil {
-		_ = s.onSave(date, payload.Tasks, report)
+		_ = s.onSave(date, payload.Tasks, s.state.Report)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -315,11 +318,8 @@ func (s *Server) handleRefine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.SetTasks(refined, nextActions)
-	report := renderer.RenderReport(date, nil, refined, nextActions)
-	s.SetReport(report)
-
 	if s.onSave != nil {
-		_ = s.onSave(date, refined, report)
+		_ = s.onSave(date, refined, s.state.Report)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -384,10 +384,8 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.SetTasks(updated, nextActions)
-	report := renderer.RenderReport(date, nil, updated, nextActions)
-	s.SetReport(report)
 	if s.onSave != nil {
-		_ = s.onSave(date, updated, report)
+		_ = s.onSave(date, updated, s.state.Report)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)

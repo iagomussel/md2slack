@@ -38,6 +38,7 @@
             <h3 class="font-bold text-lg text-white">Edit Task #{index}</h3>
             <button
                 onclick={onClose}
+                aria-label="Close modal"
                 class="text-gray-400 hover:text-white transition-colors"
             >
                 <svg
@@ -60,20 +61,24 @@
             <div class="grid grid-cols-2 gap-4">
                 <div>
                     <label
+                        for="task-intent"
                         class="block text-xs font-bold text-gray-500 uppercase mb-1"
-                        >Inent</label
+                        >Intent</label
                     >
                     <input
+                        id="task-intent"
                         bind:value={intent}
                         class="w-full bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500/50 outline-none"
                     />
                 </div>
                 <div>
                     <label
+                        for="task-scope"
                         class="block text-xs font-bold text-gray-500 uppercase mb-1"
                         >Scope</label
                     >
                     <input
+                        id="task-scope"
                         bind:value={scope}
                         class="w-full bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500/50 outline-none"
                     />
@@ -83,10 +88,12 @@
             <div class="grid grid-cols-2 gap-4">
                 <div>
                     <label
+                        for="task-type"
                         class="block text-xs font-bold text-gray-500 uppercase mb-1"
                         >Type</label
                     >
                     <select
+                        id="task-type"
                         bind:value={type}
                         class="w-full bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500/50 outline-none"
                     >
@@ -98,10 +105,12 @@
                 </div>
                 <div>
                     <label
+                        for="task-hours"
                         class="block text-xs font-bold text-gray-500 uppercase mb-1"
                         >Est. Hours</label
                     >
                     <input
+                        id="task-hours"
                         type="number"
                         bind:value={estimated_hours}
                         class="w-full bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500/50 outline-none"
@@ -111,10 +120,12 @@
 
             <div>
                 <label
+                    for="task-details"
                     class="block text-xs font-bold text-gray-500 uppercase mb-1"
                     >Technical Details (Bullets)</label
                 >
                 <textarea
+                    id="task-details"
                     bind:value={details}
                     class="w-full bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500/50 outline-none h-32 resize-none"
                 ></textarea>
@@ -122,10 +133,12 @@
 
             <div>
                 <label
+                    for="task-commits"
                     class="block text-xs font-bold text-gray-500 uppercase mb-1"
                     >Commits (Comma Separated)</label
                 >
                 <input
+                    id="task-commits"
                     bind:value={commits}
                     class="w-full bg-[#1c2128] border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-400 focus:border-blue-500/50 outline-none font-mono"
                 />

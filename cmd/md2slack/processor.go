@@ -46,6 +46,20 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 	if p.WebServer != nil {
 		p.WebServer.Reset(p.StageNames, date, repoName)
 		ui = p.WebServer
+
+		// Re-load previous session if it exists
+		if hist, err := storage.LoadHistory(repoName, date); err == nil && hist != nil {
+			p.WebServer.SetTasks(hist.Tasks, nil)
+			if hist.Report != "" {
+				p.WebServer.SetReport(hist.Report)
+			}
+			// Mark stages as done if we have a report (simple heuristic)
+			if hist.Report != "" {
+				for i := 0; i < len(p.StageNames); i++ {
+					p.WebServer.StageDone(i, "Loaded from history")
+				}
+			}
+		}
 	} else if !p.Debug {
 		ui = tui.Start(p.StageNames)
 		defer func() {

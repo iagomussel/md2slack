@@ -26,7 +26,7 @@
 
 	async function loadSettings() {
 		try {
-			const res = await fetch("/settings");
+			const res = await fetch("/api/settings");
 			if (res.ok) {
 				const data = await res.json();
 				settings = data.settings;
@@ -42,7 +42,7 @@
 
 	async function loadState() {
 		try {
-			const res = await fetch("/state");
+			const res = await fetch("/api/state");
 			if (res.ok) {
 				const state = await res.json();
 				logs = state.logs || [];
@@ -67,7 +67,7 @@
 		const path = prompt("Enter absolute path to git repository:");
 		if (!path) return;
 		try {
-			const res = await fetch("/settings", {
+			const res = await fetch("/api/settings", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
@@ -86,7 +86,7 @@
 	async function handleScanUsers() {
 		if (!selectedProject) return;
 		try {
-			const res = await fetch("/scan-users", {
+			const res = await fetch("/api/scan-users", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ path: selectedProject }),
@@ -97,7 +97,7 @@
 				const combined = Array.from(
 					new Set([...(settings.usernames || []), ...data.usernames]),
 				);
-				await fetch("/settings", {
+				await fetch("/api/settings", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
@@ -118,7 +118,7 @@
 			return;
 		}
 		try {
-			const res = await fetch("/run", {
+			const res = await fetch("/api/run", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
@@ -156,7 +156,7 @@
 	 */
 	async function handleUpdateTask(index, task) {
 		try {
-			const res = await fetch("/update-task", {
+			const res = await fetch("/api/update-task", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ index, task }),
@@ -176,7 +176,7 @@
 
 	async function handleSend() {
 		try {
-			const res = await fetch("/send", { method: "POST" });
+			const res = await fetch("/api/send", { method: "POST" });
 			if (res.ok) {
 				alert("Report sent to Slack!");
 			} else {
@@ -201,7 +201,7 @@
 				i === 3 ? { ...s, status: "running" } : s,
 			);
 
-			const res = await fetch("/action", {
+			const res = await fetch("/api/action", {
 				method: "POST",
 				body: JSON.stringify({ action, selected: [index] }),
 			});

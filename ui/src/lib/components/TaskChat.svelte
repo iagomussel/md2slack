@@ -8,8 +8,8 @@
     let loading = $state(false);
 
     // Add scroll ref
-    /** @type {HTMLDivElement} */
-    let chatContainer;
+    /** @type {HTMLDivElement|undefined} */
+    let chatContainer = $state();
 
     $effect(() => {
         if (isOpen && chatContainer) {
@@ -26,7 +26,7 @@
         loading = true;
 
         try {
-            const res = await fetch("/chat", {
+            const res = await fetch("/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ history: history }),
@@ -48,7 +48,8 @@
             // Scroll to bottom
             if (chatContainer) {
                 setTimeout(() => {
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    const el = /** @type {HTMLDivElement} */ (chatContainer);
+                    el.scrollTop = el.scrollHeight;
                 }, 50);
             }
         }
@@ -65,6 +66,7 @@
             <h3 class="font-bold text-gray-200">Assistant</h3>
             <button
                 onclick={onClose}
+                aria-label="Close assistant"
                 class="p-1 hover:bg-white/10 rounded text-gray-400 hover:text-white"
             >
                 <svg
@@ -141,6 +143,7 @@
                 ></textarea>
                 <button
                     onclick={sendMessage}
+                    aria-label="Send message"
                     disabled={loading || !input.trim()}
                     class="absolute bottom-2 right-2 p-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
