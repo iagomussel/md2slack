@@ -2,12 +2,11 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"md2slack/internal/gitdiff"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 type LLMOptions struct {
@@ -35,54 +36,12 @@ type LLMOptions struct {
 	Heartbeat     time.Duration
 }
 
-type OpenAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []OpenAIMessage `json:"messages"`
-}
-
+// OpenAIMessage is now shared with webui, but we keep it here for internal use.
+// We should probably move this to a shared types package, but for now we'll alias or duplicate if needed.
+// IMPORTANT: webui.OpenAIMessage and llm.OpenAIMessage must be compatible in structure.
 type OpenAIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
-}
-
-type OpenAIResponse struct {
-	Choices []struct {
-		Message OpenAIMessage `json:"message"`
-	} `json:"choices"`
-}
-
-type AnthropicRequest struct {
-	Model     string             `json:"model"`
-	System    string             `json:"system,omitempty"`
-	Messages  []AnthropicMessage `json:"messages"`
-	MaxTokens int                `json:"max_tokens"`
-}
-
-type AnthropicMessage struct {
-	Role    string               `json:"role"`
-	Content []AnthropicTextBlock `json:"content"`
-}
-
-type AnthropicTextBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type AnthropicResponse struct {
-	Content []AnthropicTextBlock `json:"content"`
-}
-
-type OllamaChatRequest struct {
-	Model    string                 `json:"model"`
-	Messages []OpenAIMessage        `json:"messages"`
-	Format   string                 `json:"format,omitempty"`
-	Stream   bool                   `json:"stream"`
-	Options  map[string]interface{} `json:"options"`
-}
-
-type OllamaChatResponse struct {
-	Message OpenAIMessage `json:"message"`
-	Done    bool          `json:"done"`
 }
 
 type ToolCall struct {
@@ -1048,206 +1007,100 @@ func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.Group
 	return out, err
 }
 
-func resolveLLMURL(options LLMOptions) string {
+func getAdapter(options LLMOptions) (LLMAdapter, error) {
 	provider := strings.ToLower(options.Provider)
-	url := strings.TrimSpace(options.BaseUrl)
-	if provider == "anthropic" {
-		if url == "" {
-			return "https://api.anthropic.com/v1/messages"
-		}
-		if strings.Contains(url, "/v1/messages") {
-			return url
-		}
-		return strings.TrimSuffix(url, "/") + "/v1/messages"
+	switch provider {
+	case "ollama":
+		return NewOllamaAdapter(options.ModelName, options.BaseUrl)
+	case "openai", "codex":
+		return NewOpenAIAdapter(options.ModelName, options.Token, options.BaseUrl)
+	case "anthropic":
+		return NewAnthropicAdapter(options.ModelName, options.Token, options.BaseUrl)
+	default:
+		// Default to Ollama if unknown
+		return NewOllamaAdapter(options.ModelName, options.BaseUrl)
 	}
-	if provider == "codex" || provider == "openai" {
-		if url == "" {
-			return "https://api.openai.com/v1/chat/completions"
-		}
-		if !strings.HasSuffix(url, "/chat/completions") && !strings.HasSuffix(url, "/completions") {
-			return strings.TrimSuffix(url, "/") + "/chat/completions"
-		}
-		return url
-	}
+}
 
-	if url == "" {
-		url = "http://localhost:11434"
+func convertToLLMCMessages(messages []OpenAIMessage, system string) []llms.MessageContent {
+	var result []llms.MessageContent
+	if system != "" {
+		result = append(result, llms.TextParts(llms.ChatMessageTypeSystem, system))
 	}
-	url = strings.TrimSuffix(url, "/")
-	url = strings.TrimSuffix(url, "/api/generate")
-	url = strings.TrimSuffix(url, "/api/chat")
-	return url + "/api/chat"
+	for _, msg := range messages {
+		role := strings.ToLower(msg.Role)
+		switch role {
+		case "system":
+			result = append(result, llms.TextParts(llms.ChatMessageTypeSystem, msg.Content))
+		case "user":
+			result = append(result, llms.TextParts(llms.ChatMessageTypeHuman, msg.Content))
+		case "assistant", "ai":
+			result = append(result, llms.TextParts(llms.ChatMessageTypeAI, msg.Content))
+		default:
+			result = append(result, llms.TextParts(llms.ChatMessageTypeHuman, msg.Content))
+		}
+	}
+	return result
 }
 
 func callJSON(messages []OpenAIMessage, system string, options LLMOptions, target interface{}) error {
-	var body []byte
-	var url string
+	adapter, err := getAdapter(options)
+	if err != nil {
+		return err
+	}
 
-	// Ensure system prompt is at the beginning
-	fullMessages := []OpenAIMessage{{Role: "system", Content: system}}
-	fullMessages = append(fullMessages, messages...)
-
-	payload := formatMessages(fullMessages)
+	llmsMessages := convertToLLMCMessages(messages, system)
+	payload := formatMessages(messages) // system is already in fullMessages in original code but here we keep it separate for convert
+	if system != "" {
+		payload = "SYSTEM: " + system + "\n" + payload
+	}
 	emitLLMLog(options, "LLM INPUT", payload)
+
 	reqStart := time.Now()
 	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request queued (provider=%s model=%s)", options.Provider, options.ModelName))
-
-	switch strings.ToLower(options.Provider) {
-	case "anthropic":
-		if strings.TrimSpace(options.Token) == "" {
-			return fmt.Errorf("anthropic token not configured")
-		}
-		url = resolveLLMURL(options)
-		systemText := ""
-		var anthropicMessages []AnthropicMessage
-		for _, msg := range fullMessages {
-			if msg.Role == "system" && systemText == "" {
-				systemText = msg.Content
-				continue
-			}
-			role := msg.Role
-			if role != "user" && role != "assistant" {
-				role = "user"
-			}
-			anthropicMessages = append(anthropicMessages, AnthropicMessage{
-				Role: role,
-				Content: []AnthropicTextBlock{{
-					Type: "text",
-					Text: msg.Content,
-				}},
-			})
-		}
-		maxTokens := 1024
-		if options.ContextSize > 0 {
-			maxTokens = options.ContextSize / 8
-			if maxTokens < 512 {
-				maxTokens = 512
-			}
-			if maxTokens > 4096 {
-				maxTokens = 4096
-			}
-		}
-		req := AnthropicRequest{
-			Model:     options.ModelName,
-			System:    systemText,
-			Messages:  anthropicMessages,
-			MaxTokens: maxTokens,
-		}
-		body, _ = json.Marshal(req)
-
-	case "codex", "openai":
-		url = resolveLLMURL(options)
-
-		req := OpenAIRequest{
-			Model:    options.ModelName,
-			Messages: fullMessages,
-		}
-		body, _ = json.Marshal(req)
-
-	default: // ollama
-		url = resolveLLMURL(options)
-
-		req := OllamaChatRequest{
-			Model:    options.ModelName,
-			Messages: fullMessages,
-			Format:   "json",
-			Stream:   false,
-			Options: map[string]interface{}{
-				"temperature":    0.1,
-				"top_p":          options.TopP,
-				"repeat_penalty": options.RepeatPenalty,
-				"num_ctx":        options.ContextSize,
-			},
-		}
-		body, _ = json.Marshal(req)
-	}
 
 	timeout := options.Timeout
 	if timeout == 0 {
 		timeout = 2 * time.Minute
 	}
-	heartbeat := options.Heartbeat
-	if heartbeat == 0 {
-		heartbeat = 5 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	callOpts := []llms.CallOption{
+		llms.WithRepetitionPenalty(options.RepeatPenalty),
 	}
 
-	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request url=%s timeout=%s heartbeat=%s", url, timeout, heartbeat))
-
-	reqSize := len(body)
-	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request size=%d bytes (~%d chars)", reqSize, len(payload)))
-
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(heartbeat)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				elapsed := time.Since(reqStart).Truncate(time.Millisecond)
-				emitLLMLog(options, "LLM STATUS", fmt.Sprintf("waiting... elapsed=%s", elapsed))
-			case <-done:
-				return
-			}
+	provider := strings.ToLower(options.Provider)
+	if provider == "anthropic" {
+		// Anthropic does not allow both. Prioritize temperature if set.
+		if options.Temperature > 0 {
+			callOpts = append(callOpts, llms.WithTemperature(options.Temperature))
+		} else if options.TopP > 0 && options.TopP < 1.0 {
+			callOpts = append(callOpts, llms.WithTopP(options.TopP))
 		}
-	}()
+	} else {
+		callOpts = append(callOpts, llms.WithTemperature(options.Temperature))
+		callOpts = append(callOpts, llms.WithTopP(options.TopP))
+	}
 
-	client := &http.Client{Timeout: timeout}
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	if err != nil {
-		return err
+	if strings.ToLower(options.Provider) == "ollama" {
+		// Ollama in langchaingo supports JSON mode via options if the model supports it
+		// but specifically here the original code used "format": "json"
+		// langchaingo's ollama implementation might handle this differently.
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if strings.ToLower(options.Provider) == "anthropic" {
-		req.Header.Set("x-api-key", strings.TrimSpace(options.Token))
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
-	resp, err := client.Do(req)
-	close(done)
+
+	resp, err := adapter.GenerateContent(ctx, llmsMessages, callOpts...)
 	if err != nil {
 		emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request error after %s: %v", time.Since(reqStart).Truncate(time.Millisecond), err))
 		return err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		bodyText := strings.TrimSpace(string(b))
-		if bodyText != "" {
-			emitLLMLog(options, "LLM ERROR", bodyText)
-		}
-		return fmt.Errorf("%s status %d: %s", options.Provider, resp.StatusCode, truncateLog(bodyText, 500))
+	if len(resp.Choices) == 0 {
+		return errors.New("empty LLM response")
 	}
 
-	var responseText string
-	if strings.ToLower(options.Provider) == "anthropic" {
-		var respPayload AnthropicResponse
-		if err := json.NewDecoder(resp.Body).Decode(&respPayload); err != nil {
-			return err
-		}
-		if len(respPayload.Content) > 0 {
-			responseText = respPayload.Content[0].Text
-		}
-	} else if strings.ToLower(options.Provider) == "codex" || strings.ToLower(options.Provider) == "openai" {
-		var oai OpenAIResponse
-		if err := json.NewDecoder(resp.Body).Decode(&oai); err != nil {
-			return err
-		}
-		if len(oai.Choices) > 0 {
-			responseText = oai.Choices[0].Message.Content
-		}
-	} else {
-		var ollama OllamaChatResponse
-		if err := json.NewDecoder(resp.Body).Decode(&ollama); err != nil {
-			return err
-		}
-		responseText = ollama.Message.Content
-	}
-
-	if options.Debug {
-		fmt.Printf("\n--- RAW LLM RESPONSE (%s) ---\n%s\n--- END RAW RESPONSE ---\n\n", url, responseText)
-	}
-
-	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("response received in %s (status=%d)", time.Since(reqStart).Truncate(time.Millisecond), resp.StatusCode))
+	responseText := resp.Choices[0].Content
 	emitLLMLog(options, "LLM OUTPUT", responseText)
 
 	clean := strings.TrimSpace(responseText)

@@ -23,6 +23,16 @@ import (
 //go:embed all:dist
 var distFS embed.FS
 
+// indexHTML is used for testing and contains the content of dist/index.html
+var indexHTML string
+
+func init() {
+	data, err := distFS.ReadFile("dist/index.html")
+	if err == nil {
+		indexHTML = string(data)
+	}
+}
+
 type stageStatus string
 
 const (
@@ -58,16 +68,23 @@ type RunRequest struct {
 	Author   string `json:"author"`
 }
 
+type OpenAIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type Server struct {
-	addr       string
-	mu         sync.Mutex
-	state      State
-	stageNames []string
-	runCh      chan RunRequest
-	onSend     func(report string) error
-	onRefine   func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
-	onSave     func(date string, tasks []gitdiff.TaskChange, report string) error
-	onAction   func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	addr         string
+	mu           sync.Mutex
+	state        State
+	stageNames   []string
+	runCh        chan RunRequest
+	onSend       func(report string) error
+	onRefine     func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onSave       func(date string, tasks []gitdiff.TaskChange, report string) error
+	onAction     func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
+	onChat       func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error)
+	onUpdateTask func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)
 }
 
 func Start(addr string, stageNames []string) *Server {
@@ -83,8 +100,14 @@ func (s *Server) SetHandlers(onSend func(string) error, onRefine func(string, []
 	s.onSave = onSave
 }
 
-func (s *Server) SetActionHandler(onAction func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error)) {
+func (s *Server) SetActionHandler(
+	onAction func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error),
+	onChat func(history []OpenAIMessage, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, string, error),
+	onUpdateTask func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error),
+) {
 	s.onAction = onAction
+	s.onChat = onChat
+	s.onUpdateTask = onUpdateTask
 }
 
 func (s *Server) RunChannel() <-chan RunRequest {
@@ -181,6 +204,8 @@ func (s *Server) startHTTP() {
 	mux.HandleFunc("/send", s.handleSend)
 	mux.HandleFunc("/run", s.handleRun)
 	mux.HandleFunc("/action", s.handleAction)
+	mux.HandleFunc("/chat", s.handleChat)
+	mux.HandleFunc("/update-task", s.handleUpdateTask)
 	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/scan-users", s.handleScanUsers)
 	mux.HandleFunc("/recent-activity", s.handleRecentActivity)

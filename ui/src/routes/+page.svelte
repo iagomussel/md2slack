@@ -1,6 +1,8 @@
 <script>
 	import Sidebar from "$lib/components/Sidebar.svelte";
 	import TaskList from "$lib/components/TaskList.svelte";
+	import TaskChat from "$lib/components/TaskChat.svelte";
+	import TaskModal from "$lib/components/TaskModal.svelte";
 	import { onMount } from "svelte";
 
 	let selectedProject = $state("");
@@ -14,22 +16,23 @@
 	let date = $state("");
 	let report_html = $state("");
 
+	let isChatOpen = $state(false);
+	let editingTaskIndex = $state(-1);
+	let editingTask = $state(null);
+
 	/** @type {any[]} */
 	let projects = $state([]);
-	/** @type {{ usernames: string[], project_paths?: string[] }} */
-	let settings = $state({ usernames: [] });
-
-	console.log("Dashboard initializing...");
+	let settings = $state({ usernames: [], project_paths: [] });
 
 	async function loadSettings() {
 		try {
 			const res = await fetch("/settings");
 			if (res.ok) {
 				const data = await res.json();
-				settings = data.settings || { usernames: [] };
-				projects = data.projects || [];
-				if (!selectedProject && projects.length > 0) {
-					selectedProject = projects[0].path;
+				settings = data.settings;
+				projects = data.projects;
+				if (!selectedProject && data.current_project) {
+					selectedProject = data.current_project;
 				}
 			}
 		} catch (e) {
@@ -41,104 +44,136 @@
 		try {
 			const res = await fetch("/state");
 			if (res.ok) {
-				const data = await res.json();
-				logs = data.logs || [];
-				tasks = data.tasks || [];
-				stages = data.stages || [];
-				// Only pull date if we don't have one set locally
-				if (!date && data.date) {
-					date = data.date;
-				}
-				report_html = data.report_html || "";
+				const state = await res.json();
+				logs = state.logs || [];
+				tasks = state.tasks || [];
+				stages = state.stages || [];
+				report_html = state.report_html || "";
+				if (!date && state.date) date = state.date;
 			}
 		} catch (e) {
 			console.error("Failed to load state", e);
 		}
 	}
 
-	/** @param {{ date?: number, author?: string }} commit */
-	function handleCommitClick(commit) {
-		if (commit.date) {
-			// Convert unix timestamp to YYYY-MM-DD
-			date = new Date(commit.date * 1000).toISOString().split("T")[0];
-		}
-		if (commit.author) {
-			selectedUser = commit.author;
-		}
-	}
-
-	async function handleAddProject() {
-		const path = prompt("Enter absolute project path:");
-		if (!path) return;
-		const res = await fetch("/settings", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				project_paths: [...(settings.project_paths || []), path],
-				usernames: settings.usernames || [],
-			}),
-		});
-		if (res.ok) loadSettings();
-	}
-
-	async function handleScanUsers() {
-		const res = await fetch("/scan-users", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ path: selectedProject }),
-		});
-		if (res.ok) {
-			const data = await res.json();
-			const newUsers = data.usernames || [];
-			await fetch("/settings", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					project_paths: settings.project_paths || [],
-					usernames: [
-						...new Set([
-							...(settings.usernames || []),
-							...newUsers,
-						]),
-					],
-				}),
-			});
-			loadSettings();
-		}
-	}
-
 	onMount(() => {
-		console.log("Dashboard mounted");
 		loadSettings();
 		loadState();
 		const interval = setInterval(loadState, 2000);
 		return () => clearInterval(interval);
 	});
 
-	async function handleRun() {
+	async function handleAddProject() {
+		const path = prompt("Enter absolute path to git repository:");
+		if (!path) return;
 		try {
-			// Clear local state for immediate feedback
-			tasks = [];
-			report_html = "";
-			logs = ["Queuing analysis..."];
-			stages = stages.map((s) => ({
-				...s,
-				status: "pending",
-				duration: "",
-			}));
-
-			await fetch("/run", {
+			const res = await fetch("/settings", {
 				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					project_paths: [...settings.project_paths, path],
+					usernames: settings.usernames,
+				}),
+			});
+			if (res.ok) {
+				await loadSettings();
+			}
+		} catch (e) {
+			console.error("Failed to add project", e);
+		}
+	}
+
+	async function handleScanUsers() {
+		if (!selectedProject) return;
+		try {
+			const res = await fetch("/scan-users", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path: selectedProject }),
+			});
+			if (res.ok) {
+				const data = await res.json();
+				// Merge and save
+				const combined = Array.from(
+					new Set([...(settings.usernames || []), ...data.usernames]),
+				);
+				await fetch("/settings", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						project_paths: settings.project_paths,
+						usernames: combined,
+					}),
+				});
+				await loadSettings();
+			}
+		} catch (e) {
+			console.error("Failed to scan users", e);
+		}
+	}
+
+	async function handleRun() {
+		if (!date) {
+			alert("Please select a date");
+			return;
+		}
+		try {
+			const res = await fetch("/run", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					date,
 					repo_path: selectedProject,
 					author: selectedUser,
 				}),
 			});
+			if (res.ok) {
+				// Reset stages locally for immediate feedback
+				stages = stages.map((s) => ({ ...s, status: "pending" }));
+				loadState();
+			} else {
+				const err = await res.text();
+				alert("Run failed: " + err);
+			}
 		} catch (e) {
-			console.error("Failed to trigger run", e);
+			console.error("Failed to run", e);
 		}
 	}
+
+	/** @param {any} commit */
+	function handleCommitClick(commit) {
+		const d = new Date(commit.date * 1000);
+		const yyyy = d.getFullYear();
+		const mm = String(d.getMonth() + 1).padStart(2, "0");
+		const dd = String(d.getDate()).padStart(2, "0");
+		date = `${yyyy}-${mm}-${dd}`;
+		// No automatic run as requested
+	}
+
+	/**
+	 * @param {number} index
+	 * @param {any} task
+	 */
+	async function handleUpdateTask(index, task) {
+		try {
+			const res = await fetch("/update-task", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ index, task }),
+			});
+			if (res.ok) {
+				const updated = await res.json();
+				tasks = updated;
+				// Refresh report
+				const reportRes = await fetch("/state");
+				const state = await reportRes.json();
+				report_html = state.report_html;
+			}
+		} catch (e) {
+			console.error("Failed to update task", e);
+		}
+	}
+
 	async function handleSend() {
 		try {
 			const res = await fetch("/send", { method: "POST" });
@@ -154,6 +189,12 @@
 	}
 	/** @param {number} index @param {string} action */
 	async function handleTaskAction(index, action) {
+		if (action === "manual_edit") {
+			editingTaskIndex = index;
+			editingTask = JSON.parse(JSON.stringify(tasks[index]));
+			return;
+		}
+
 		try {
 			// Update status to show something is happening
 			stages = stages.map((s, i) =>
@@ -194,10 +235,56 @@
 		onCommitClick={handleCommitClick}
 	/>
 
+	{#if isChatOpen}
+		<TaskChat
+			isOpen={isChatOpen}
+			onClose={() => (isChatOpen = false)}
+			onTasksUpdate={(updated) => {
+				tasks = updated;
+				// trigger refresh
+				loadState();
+			}}
+		/>
+	{/if}
+
+	{#if editingTaskIndex >= 0}
+		<TaskModal
+			task={editingTask}
+			index={editingTaskIndex}
+			onClose={() => {
+				editingTaskIndex = -1;
+				editingTask = null;
+			}}
+			onSave={(idx, updated) => handleUpdateTask(idx, updated)}
+		/>
+	{/if}
+
 	<main class="flex-1 flex flex-col min-w-0 overflow-hidden bg-[#0d1117]/50">
 		<header
 			class="h-16 border-b border-white/10 flex items-center justify-between px-8 shrink-0 bg-[#0d1117]"
 		>
+			<div class="flex items-center gap-4">
+				<h1 class="text-lg font-bold">Daily Report</h1>
+				<button
+					onclick={() => (isChatOpen = !isChatOpen)}
+					class="px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all flex items-center gap-2"
+				>
+					<svg
+						class="w-3.5 h-3.5"
+						fill="none"
+						viewBox="0 0 24 24"
+						stroke="currentColor"
+					>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+						/>
+					</svg>
+					Assistant
+				</button>
+			</div>
 			<div class="flex items-center gap-6">
 				<div class="flex flex-col">
 					<label

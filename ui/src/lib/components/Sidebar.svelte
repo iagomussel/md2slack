@@ -102,17 +102,23 @@
 				<label
 					for="author-select"
 					class="block text-[10px] font-bold text-gray-600 uppercase mb-1.5 ml-1"
-					>Author</label
+					>Authors (Hold Cmd/Ctrl)</label
 				>
 				<select
 					id="author-select"
-					class="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-orange-500/50 hover:bg-black/30 transition-colors"
-					value={appState.selectedUser}
+					multiple
+					class="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-orange-500/50 hover:bg-black/30 transition-colors h-24"
+					value={appState.selectedUser
+						? appState.selectedUser.split(",")
+						: []}
 					onchange={(e) => {
 						const target = /** @type {HTMLSelectElement} */ (
 							e.target
 						);
-						if (target) onSelectUser(target.value);
+						const selected = Array.from(target.selectedOptions).map(
+							(o) => o.value,
+						);
+						onSelectUser(selected.join(","));
 					}}
 				>
 					{#each settings.usernames || [] as u}

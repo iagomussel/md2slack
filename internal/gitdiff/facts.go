@@ -39,6 +39,11 @@ type Output struct {
 	Semantic  []CommitSemantic `json:"semantic,omitempty"`
 }
 
+func UpdateGitFetch(repoPath string) error {
+	_, err := runGit(repoPath, `git fetch --all`)
+	return err
+}
+
 func GetRepoName() string {
 	return GetRepoNameAt("")
 }
@@ -69,24 +74,40 @@ func GenerateFactsWithOptions(date string, extra string, repoPath string, author
 	// 2. Format date for Git (it strictly needs YYYY-MM-DD)
 	isoDate := toISODate(date)
 
-	// Broaden author search: use first part of name and case-insensitivity
-	// This handles variations like "iago.mussel" vs "IagoMussel"
-	authorPart := fullAuthor
-	if idx := strings.Index(fullAuthor, " "); idx > 0 {
-		authorPart = fullAuthor[:idx]
+	// Broaden author search: split by comma and handle each part
+	authors := strings.Split(authorOverride, ",")
+	var authorFlags []string
+	for _, a := range authors {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		// Basic normalization
+		part := a
+		if idx := strings.Index(a, " "); idx > 0 {
+			part = a[:idx]
+		}
+		if idx := strings.Index(part, "."); idx > 0 {
+			part = part[:idx]
+		}
+		authorFlags = append(authorFlags, fmt.Sprintf("--author=\"%s\"", part))
 	}
-	if idx := strings.Index(authorPart, "."); idx > 0 {
-		authorPart = authorPart[:idx]
+
+	authorStr := strings.Join(authorFlags, " ")
+	if authorStr == "" {
+		// Fallback to current git user
+		current, _ := runGit(repoPath, `git config user.name`)
+		authorStr = fmt.Sprintf("--author=\"%s\"", strings.TrimSpace(current))
 	}
 
 	raw, err := runGit(repoPath, fmt.Sprintf(`
-git log --author="%s" --regexp-ignore-case \
+git log %s --regexp-ignore-case \
 --since="%s 00:00:00" \
 --until="%s 23:59:59" \
 --no-merges \
 --format="commit %%h%%n%%s" \
 -p -U1 --all
-`, authorPart, isoDate, isoDate))
+`, authorStr, isoDate, isoDate))
 	if err != nil {
 		return nil, err
 	}
