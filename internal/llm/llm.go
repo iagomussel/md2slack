@@ -191,15 +191,13 @@ func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, su
 	if err != nil {
 		return taskTools.GetUpdatedTasks(), err
 	}
-	// If model replied with no tool calls, retry once with explicit instruction
+	// If model replied with no tool calls, do not retry (retry doubled stage time to 14–27+ s).
+	// Return current tasks so the stage finishes in ~7s; prompt asks for tool calls on first turn.
 	if !toolUsed && strings.TrimSpace(responseText) != "" {
-		retryPrompt := "You responded without calling any tools. You MUST call the tools now: for each task add details (add_details) and time (add_time), link every valid commit (add_commit_reference), merge duplicates (merge_tasks). Reply with tool calls only."
-		history := []OpenAIMessage{
-			{Role: "user", Content: prompt},
-			{Role: "assistant", Content: responseText},
-			{Role: "user", Content: retryPrompt},
+		// Log only; tasks remain unchanged
+		if options.OnLLMLog != nil {
+			options.OnLLMLog("Stage 3: model responded with text only (no tool calls); tasks unchanged")
 		}
-		_, _, err = agent.StreamChat(history, system)
 	}
 	return taskTools.GetUpdatedTasks(), err
 }

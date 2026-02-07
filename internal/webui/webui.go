@@ -244,6 +244,7 @@ func (s *Server) startHTTP() {
 	mux.HandleFunc("/api/git-graph", s.handleGitGraph)
 	mux.HandleFunc("/api/load-history", s.handleLoadHistory)
 	mux.HandleFunc("/api/clear-tasks", s.handleClearTasks)
+	mux.HandleFunc("/api/delete-task", s.handleDeleteTask)
 
 	sub, _ := fs.Sub(distFS, "dist")
 	fileServer := http.FileServer(http.FS(sub))
@@ -660,6 +661,43 @@ func (s *Server) handleClearTasks(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		Index int `json:"index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	tasks := s.state.Tasks
+	nextActions := s.state.NextActions
+	date := s.state.Date
+	repo := s.state.Repo
+	s.mu.Unlock()
+
+	if payload.Index < 0 || payload.Index >= len(tasks) {
+		http.Error(w, "index out of range", http.StatusBadRequest)
+		return
+	}
+
+	updated := make([]gitdiff.TaskChange, 0, len(tasks)-1)
+	updated = append(updated, tasks[:payload.Index]...)
+	updated = append(updated, tasks[payload.Index+1:]...)
+
+	s.SetTasks(updated, nextActions)
+	if s.onSave != nil {
+		_ = s.onSave(repo, date, updated, s.state.Report)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(updated)
 }
 
 func appendLog(list []string, line string, max int) []string {

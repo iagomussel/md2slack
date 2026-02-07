@@ -266,6 +266,26 @@
 			editingTask = JSON.parse(JSON.stringify(tasks[index]));
 			return;
 		}
+		if (action === "delete_task") {
+			if (!confirm("Delete this task?")) return;
+			try {
+				const res = await fetch("/api/delete-task", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ index }),
+				});
+				if (res.ok) {
+					const updated = await res.json();
+					tasks = updated;
+					const reportRes = await fetch("/api/state");
+					const state = await reportRes.json();
+					report_html = state.report_html;
+				}
+			} catch (e) {
+				console.error("Failed to delete task", e);
+			}
+			return;
+		}
 
 		try {
 			// Update status to show something is happening
