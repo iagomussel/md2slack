@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/storage"
 )
@@ -32,7 +33,7 @@ Parameters (JSON):
 }
 
 func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error) {
-	fmt.Println("update_task called with input:", input)
+	log.Println("update_task called with input:", input)
 	var params struct {
 		Index        *int    `json:"index,omitempty"`
 		TaskID       *string `json:"task_id,omitempty"`
@@ -43,13 +44,13 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		fmt.Println("ERROR:invalid parameters", err)
+		log.Println("ERROR:invalid parameters", err)
 		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
 	if err != nil {
-		fmt.Println("ERROR:failed to load tasks", err)
+		log.Println("ERROR:failed to load tasks", err)
 		return "ERROR:failed to load tasks", err
 	}
 	var taskID string
@@ -58,12 +59,12 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 	} else if params.Index != nil {
 		idx := *params.Index
 		if idx < 0 || idx >= len(tasks) {
-			fmt.Println("ERROR:index out of bounds", idx)
+			log.Println("ERROR:index out of bounds", idx)
 			return "ERROR:index out of bounds", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
 		}
 		taskID = tasks[idx].ID
 	} else {
-		fmt.Println("ERROR:task_id or index is required")
+		log.Println("ERROR:task_id or index is required")
 		return "ERROR:task_id or index is required", fmt.Errorf("task_id or index is required")
 	}
 	var task *gitdiff.TaskChange
@@ -74,7 +75,7 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 		}
 	}
 	if task == nil {
-		fmt.Printf("ERROR:task_id %s not found\n", taskID)
+		log.Printf("ERROR:task_id %s not found\n", taskID)
 		return "ERROR:task_id %s not found", fmt.Errorf("task_id %s not found", taskID)
 	}
 
@@ -93,7 +94,7 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 
 	updated, err := storage.UpdateTask(t.RepoName, t.Date, taskID, *task)
 	if err != nil {
-		fmt.Println("ERROR:failed to update task", err)
+		log.Println("ERROR:failed to update task", err)
 		return "ERROR:failed to update task", err
 	}
 	*t.Tasks = updated

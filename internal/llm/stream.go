@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm/tools"
 	"strings"
@@ -31,7 +32,7 @@ func StreamChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.Task
 	}
 
 	parsedTools := parseToolCallsFromText(responseText)
-	fmt.Printf("stream.go:35 [llm.StreamChatWithRequests] toolUsed=false parsedTools=%d responseLen=%d response=%q",
+	log.Printf("stream.go:35 [llm.StreamChatWithRequests] toolUsed=false parsedTools=%d responseLen=%d response=%q",
 		len(parsedTools),
 		len(responseText),
 		truncateForLog(responseText, 200),
@@ -41,7 +42,7 @@ func StreamChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.Task
 		if err != nil {
 			return taskTools.GetUpdatedTasks(), responseText, nil
 		}
-		fmt.Printf("stream.go:47 [llm.StreamChatWithRequests] forcedTools=%d forcedLen=%d forced=%q",
+		log.Printf("stream.go:47 [llm.StreamChatWithRequests] forcedTools=%d forcedLen=%d forced=%q",
 			len(forcedTools),
 			len(forcedText),
 			truncateForLog(forcedText, 200),
@@ -59,7 +60,7 @@ func StreamChatWithRequests(history []OpenAIMessage, currentTasks []gitdiff.Task
 		}
 	}
 
-	updatedTasks, log, status := ApplyTools(parsedTools, currentTasks, allowedCommits)
+	updatedTasks, log, status := ApplyToolsWithContext(parsedTools, currentTasks, allowedCommits, options.RepoName, options.Date)
 
 	if options.OnToolEnd != nil {
 		resultData := map[string]interface{}{

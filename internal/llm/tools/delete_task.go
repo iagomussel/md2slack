@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/storage"
 )
@@ -28,20 +29,20 @@ Parameters (JSON):
 }
 
 func (t *DeleteTaskTool) Call(ctx context.Context, input string) (string, error) {
-	fmt.Println("delete_task called with input:", input)
+	log.Println("delete_task called with input:", input)
 	var params struct {
 		Indices []int    `json:"indices,omitempty"`
 		TaskIDs []string `json:"task_ids,omitempty"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		fmt.Println("ERROR:invalid parameters", err)
+		log.Println("ERROR:invalid parameters", err)
 		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
 	if err != nil {
-		fmt.Println("ERROR:failed to load tasks", err)
+		log.Println("ERROR:failed to load tasks", err)
 		return "ERROR:failed to load tasks", err
 	}
 
@@ -49,20 +50,20 @@ func (t *DeleteTaskTool) Call(ctx context.Context, input string) (string, error)
 	if len(taskIDs) == 0 && len(params.Indices) > 0 {
 		for _, idx := range params.Indices {
 			if idx < 0 || idx >= len(tasks) {
-				fmt.Println("ERROR:index out of bounds", idx)
+				log.Println("ERROR:index out of bounds", idx)
 				return "ERROR:index out of bounds", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
 			}
 			taskIDs = append(taskIDs, tasks[idx].ID)
 		}
 	}
 	if len(taskIDs) == 0 {
-		fmt.Println("ERROR:no task_ids or indices provided")
+		log.Println("ERROR:no task_ids or indices provided")
 		return "ERROR:no task_ids or indices provided", fmt.Errorf("no task_ids or indices provided")
 	}
 
 	updated, err := storage.DeleteTasks(t.RepoName, t.Date, taskIDs)
 	if err != nil {
-		fmt.Println("ERROR:failed to delete tasks", err)
+		log.Println("ERROR:failed to delete tasks", err)
 		return "ERROR:failed to delete tasks", err
 	}
 	*t.Tasks = updated

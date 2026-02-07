@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/storage"
 )
@@ -35,7 +36,7 @@ Parameters (JSON):
 }
 
 func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error) {
-	fmt.Println("create_task called with input:", input)
+	log.Println("create_task called with input:", input)
 	var params struct {
 		Title          string   `json:"title"`
 		Details        string   `json:"details"`
@@ -49,7 +50,7 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		fmt.Println("ERROR:invalid parameters", err)
+		log.Println("ERROR:invalid parameters", err)
 		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
@@ -73,7 +74,7 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 
 	id, updated, err := storage.CreateTask(t.RepoName, t.Date, newTask)
 	if err != nil {
-		fmt.Println("ERROR:failed to create task", err)
+		log.Println("ERROR:failed to create task", err)
 		return "ERROR:failed to create task", err
 	}
 	*t.Tasks = updated

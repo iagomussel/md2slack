@@ -179,7 +179,48 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 			continue
 		}
 
-		// No tool calls, we are done
+		// No tool calls: check for ```python blocks to run and feed back
+		if responseText != "" {
+			blocks := ExtractPythonBlocks(responseText)
+			if len(blocks) > 0 {
+				repoDir := a.Options.RepoPath
+				var results []string
+				for _, code := range blocks {
+					if code == "" {
+						continue
+					}
+					stdout, stderr, err := RunPythonInDir(repoDir, code)
+					var line string
+					if err != nil {
+						line = fmt.Sprintf("Error: %v", err)
+					} else {
+						line = "stdout: " + stdout
+					}
+					if stderr != "" {
+						line += "\nstderr: " + stderr
+					}
+					results = append(results, line)
+				}
+				if len(results) > 0 {
+					execResult := "Python execution result:\n" + strings.Join(results, "\n---\n")
+					// Add assistant message (response with code) then user message (result) and continue
+					currentMessages = append(currentMessages, llms.MessageContent{
+						Role:  llms.ChatMessageTypeAI,
+						Parts: []llms.ContentPart{llms.TextContent{Text: responseText}},
+					})
+					currentMessages = append(currentMessages, llms.MessageContent{
+						Role:  llms.ChatMessageTypeHuman,
+						Parts: []llms.ContentPart{llms.TextContent{Text: execResult}},
+					})
+					if a.Options.OnToolLog != nil {
+						a.Options.OnToolLog(execResult)
+					}
+					continue
+				}
+			}
+		}
+
+		// No tool calls and no python to run, we are done
 		return responseText, toolUsed, nil
 	}
 

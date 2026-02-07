@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"md2slack/internal/config"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm"
@@ -33,7 +34,7 @@ func SetupServerHandlers(server *webui.Server, p *ReportProcessor) {
 	server.SetHandlers(
 		func(report string) error {
 			if p.Debug {
-				fmt.Println("Debug mode: skipping Slack send")
+				log.Println("Debug mode: skipping Slack send")
 				return nil
 			}
 			return slack.SendMarkdown(&p.Config.Slack, report)

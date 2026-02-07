@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/storage"
 )
@@ -23,25 +24,28 @@ func (t *AddDetailsTool) Description() string {
 }
 
 func (t *AddDetailsTool) Call(ctx context.Context, input string) (string, error) {
-	fmt.Println("add_details called with input:", input)
+	log.Println("add_details called with input:", input)
 	var params struct {
 		Index   int    `json:"index"`
 		Details string `json:"details"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		fmt.Println("ERROR:invalid parameters", err)
+		log.Println("ERROR:invalid parameters", err)
 		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
 	if err != nil {
-		fmt.Println("ERROR:failed to load tasks", err)
+		log.Println("ERROR:failed to load tasks", err)
 		return "ERROR:failed to load tasks", err
 	}
 
+	if params.Index == -1 && len(tasks) > 0 {
+		params.Index = len(tasks) - 1
+	}
 	if params.Index < 0 || params.Index >= len(tasks) {
-		fmt.Println("ERROR:index out of bounds", params.Index)
+		log.Println("ERROR:index out of bounds", params.Index)
 		return "ERROR:index out of bounds", fmt.Errorf("index %d out of bounds", params.Index)
 	}
 
@@ -54,7 +58,7 @@ func (t *AddDetailsTool) Call(ctx context.Context, input string) (string, error)
 
 	updated, err := storage.UpdateTask(t.RepoName, t.Date, task.ID, *task)
 	if err != nil {
-		fmt.Println("ERROR:failed to update task", err)
+		log.Println("ERROR:failed to update task", err)
 		return "ERROR:failed to update task", err
 	}
 	*t.Tasks = updated

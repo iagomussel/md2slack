@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"md2slack/internal/config"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm"
@@ -60,7 +61,7 @@ func (p *ReportProcessor) Run() {
 		return
 	}
 
-	fmt.Println("ReportProcessor: waiting for requests...")
+	log.Println("ReportProcessor: waiting for requests...")
 	for req := range p.WebServer.RunChannel() {
 		p.ProcessDate(req.Date, req.RepoPath, req.Author, "")
 	}
@@ -81,7 +82,7 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 	}
 
 	ctx.repoName = gitdiff.GetRepoNameAt(ctx.repoPath)
-	fmt.Printf("\n--- Date: %s (Repo: %s) autor %s ---\n", ctx.date, ctx.repoName, ctx.authorOverride)
+	log.Printf("\n--- Date: %s (Repo: %s) autor %s ---\n", ctx.date, ctx.repoName, ctx.authorOverride)
 
 	if p.WebServer != nil {
 		p.WebServer.Reset(p.StageNames, ctx.date, ctx.repoName)
@@ -115,6 +116,7 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 }
 
 func (p *ReportProcessor) runStage(ctx *processCtx, stage int, logMsg string, action func(*processCtx) error) bool {
+	log.Printf("<=-------- Run Stage (%d) %s --------=>\n\n...\n", stage, logMsg)
 	start := time.Now()
 	if ctx.ui != nil {
 		ctx.ui.StageStart(stage, "")
@@ -149,6 +151,7 @@ func (p *ReportProcessor) runStage(ctx *processCtx, stage int, logMsg string, ac
 	}
 
 	p.logf(ctx, "Stage %d done in %s", stage, time.Since(start).Truncate(time.Millisecond))
+	log.Printf("Stage %d done in %s", stage, time.Since(start).Truncate(time.Millisecond))
 	return true
 }
 
@@ -171,6 +174,9 @@ func (p *ReportProcessor) loadSessionFromHistory(ctx *processCtx) {
 }
 
 func (p *ReportProcessor) configureLLMOpts(ctx *processCtx) {
+	ctx.llmOpts.RepoName = ctx.repoName
+	ctx.llmOpts.Date = ctx.date
+	ctx.llmOpts.RepoPath = ctx.repoPath
 	ctx.llmOpts.Quiet = ctx.ui != nil
 	if ctx.ui != nil {
 		ctx.llmOpts.OnToolLog = ctx.ui.Log
@@ -204,6 +210,7 @@ func (p *ReportProcessor) stageSummarizeCommits(ctx *processCtx) error {
 	results := make(chan commitResult, len(commits))
 	for i, commit := range commits {
 		go func(idx int, c gitdiff.Commit) {
+			log.Println("Analyzing commit %s...", c.Hash)
 			var semantic gitdiff.CommitSemantic
 			for _, s := range ctx.gitFacts.Semantic {
 				if s.CommitHash == c.Hash {
@@ -228,11 +235,13 @@ func (p *ReportProcessor) stageSummarizeCommits(ctx *processCtx) error {
 			continue
 		}
 		ctx.commitChanges[res.index] = *res.cc
+		log.Printf("Commit %s analyzed: %+v", res.cc.CommitHash, ctx.commitChanges[res.index])
 	}
 	return nil
 }
 
 func (p *ReportProcessor) stageGenerateTasks(ctx *processCtx) error {
+	log.Println("Generating tasks...")
 	if p.WebServer != nil {
 		ctx.allTasks = p.WebServer.GetTasks()
 	}
@@ -240,6 +249,7 @@ func (p *ReportProcessor) stageGenerateTasks(ctx *processCtx) error {
 	manualTasks, _ := llm.IncorporateExtraContext(ctx.gitFacts.Extra, ctx.llmOpts)
 
 	for i, cc := range ctx.commitChanges {
+		log.Println("Incorporating commit %s...", cc.CommitHash)
 		if cc.CommitHash == "" {
 			continue
 		}
@@ -295,8 +305,8 @@ func (p *ReportProcessor) finalizeReport(ctx *processCtx) {
 		ctx.ui.Stop()
 	}
 
-	fmt.Println("\n--- FINAL REPORT ---")
-	fmt.Println(ctx.report)
+	log.Println("\n--- FINAL REPORT ---")
+	log.Println(ctx.report)
 
 	if err := storage.SaveHistory(ctx.repoName, ctx.date, ctx.report, "assistant"); err != nil {
 		p.errf(ctx, "Warning: failed to save history: %v", err)
@@ -311,30 +321,30 @@ func (p *ReportProcessor) handleOutput(ctx *processCtx) {
 	} else if p.WebServer == nil {
 		p.sendToSlack(ctx)
 	} else {
-		fmt.Println("Web UI enabled: report ready; use the Send button to post to Slack.")
+		log.Println("Web UI enabled: report ready; use the Send button to post to Slack.")
 	}
 }
 
 func (p *ReportProcessor) printDebugInfo(ctx *processCtx) {
-	fmt.Println("--- LLM Report ---")
-	fmt.Println(ctx.report)
-	fmt.Println("--- Slack Blocks ---")
+	log.Println("--- LLM Report ---")
+	log.Println(ctx.report)
+	log.Println("--- Slack Blocks ---")
 	blocks, err := slack.ConvertToBlocks(ctx.report)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error converting to blocks: %v\n", err)
 		return
 	}
 	b, _ := json.MarshalIndent(blocks, "", "  ")
-	fmt.Println(string(b))
+	log.Println(string(b))
 }
 
 func (p *ReportProcessor) sendToSlack(ctx *processCtx) {
-	fmt.Println("Sending to Slack...")
+	log.Println("Sending to Slack...")
 	if err := slack.SendMarkdown(&p.Config.Slack, ctx.report); err != nil {
 		fmt.Fprintf(os.Stderr, "Error sending to Slack: %v\n", err)
 		return
 	}
-	fmt.Printf("Daily Status Report for %s sent successfully!\n", ctx.date)
+	log.Printf("Daily Status Report for %s sent successfully!\n", ctx.date)
 }
 
 func (p *ReportProcessor) logf(ctx *processCtx, format string, args ...interface{}) {
@@ -342,7 +352,7 @@ func (p *ReportProcessor) logf(ctx *processCtx, format string, args ...interface
 	if ctx.ui != nil {
 		ctx.ui.Log(msg)
 	} else {
-		fmt.Println(msg)
+		log.Println(msg)
 	}
 }
 

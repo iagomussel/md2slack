@@ -3,6 +3,7 @@ package gitdiff
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -67,7 +68,7 @@ func GenerateFactsWithOptions(date string, extra string, repoPath string, author
 	// 1. Get user and repo info
 	fullAuthor := strings.TrimSpace(authorOverride)
 	if fullAuthor == "" {
-		fullAuthor, _ = runGit(repoPath, `git config user.name`)
+		log.Printf("autor filter disabled, using all commits \n")
 	}
 	repo := GetRepoNameAt(repoPath)
 
@@ -114,6 +115,8 @@ git log %s --regexp-ignore-case \
 
 	// 3. Parse and Analyze
 	commits := ParseGitLog(raw)
+
+	log.Printf("found %d commits\n", len(commits))
 	var diffs []CommitDiff
 	var semantics []CommitSemantic
 
@@ -133,6 +136,7 @@ git log %s --regexp-ignore-case \
 			go func(idx int, f DiffFile) {
 				defer wg.Done()
 				commitSignals[idx] = ExtractSignals(f)
+				log.Printf("Signal extractor for %s - %s \n", file, f)
 			}(i, file)
 		}
 		wg.Wait()

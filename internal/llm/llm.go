@@ -22,6 +22,7 @@ type LLMOptions struct {
 	Token           string
 	RepoName        string
 	Date            string
+	RepoPath        string // Working directory for running Python from ```python blocks; empty = current dir
 	Quiet           bool
 	OnToolLog       func(string)
 	OnToolStatus    func(string)
@@ -186,7 +187,20 @@ func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, su
 
 	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
 	agent := NewAgent(options, taskTools)
-	_, _, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	responseText, toolUsed, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	if err != nil {
+		return taskTools.GetUpdatedTasks(), err
+	}
+	// If model replied with no tool calls, retry once with explicit instruction
+	if !toolUsed && strings.TrimSpace(responseText) != "" {
+		retryPrompt := "You responded without calling any tools. You MUST call the tools now: for each task add details (add_details) and time (add_time), link every valid commit (add_commit_reference), merge duplicates (merge_tasks). Reply with tool calls only."
+		history := []OpenAIMessage{
+			{Role: "user", Content: prompt},
+			{Role: "assistant", Content: responseText},
+			{Role: "user", Content: retryPrompt},
+		}
+		_, _, err = agent.StreamChat(history, system)
+	}
 	return taskTools.GetUpdatedTasks(), err
 }
 
@@ -240,11 +254,20 @@ func RefineTasksWithPrompt(tasks []gitdiff.TaskChange, userPrompt string, option
 	return PruneTasks(out), nil
 }
 
+const defaultNextActionsTimeout = 90 * time.Second
+
 func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]string, error) {
 	system := readPromptFile("next_actions.txt")
 	if system == "" {
 		return nil, errors.New("prompt file next_actions.txt not found")
 	}
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = defaultNextActionsTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	var cleanTasks []map[string]string
 	for _, t := range tasks {
 		cleanTasks = append(cleanTasks, map[string]string{"intent": t.TaskIntent, "scope": t.Scope, "type": t.TaskType})
@@ -253,7 +276,7 @@ func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]strin
 	prompt := fmt.Sprintf("Tasks synthesized for today:\n%s", string(inputJSON))
 	var suggestions []string
 	agent := NewAgent(options, nil)
-	err := agent.CallJSON(context.Background(), []OpenAIMessage{{Role: "user", Content: prompt}}, system, &suggestions)
+	err := agent.CallJSON(ctx, []OpenAIMessage{{Role: "user", Content: prompt}}, system, &suggestions)
 	return suggestions, err
 }
 

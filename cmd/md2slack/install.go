@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 )
 
 func runInstall() {
-	fmt.Println("Installing in user mode (no sudo required)...")
+	log.Println("Installing in user mode (no sudo required)...")
 
 	// 1. Link Project Directory to ~/.md2slack
 	home, err := os.UserHomeDir()
@@ -28,10 +29,10 @@ func runInstall() {
 	// Remove existing symlink or directory
 	if stats, err := os.Lstat(targetLink); err == nil {
 		if stats.Mode()&os.ModeSymlink != 0 {
-			fmt.Println("Removing existing ~/.md2slack symlink...")
+			log.Println("Removing existing ~/.md2slack symlink...")
 			os.Remove(targetLink)
 		} else if stats.IsDir() {
-			fmt.Println("Backing up existing ~/.md2slack directory to ~/.md2slack.bak")
+			log.Println("Backing up existing ~/.md2slack directory to ~/.md2slack.bak")
 			os.Rename(targetLink, targetLink+".bak")
 		}
 	}
@@ -40,12 +41,12 @@ func runInstall() {
 		fmt.Fprintf(os.Stderr, "Error linking ~/.md2slack: %v\n", err)
 		return
 	} else {
-		fmt.Printf("Linked ~/.md2slack -> %s\n", absCwd)
+		log.Printf("Linked ~/.md2slack -> %s\n", absCwd)
 	}
 
 	// 2. Advise on PATH
-	fmt.Printf("\nInstallation successful!\n")
-	fmt.Printf("Please add the following to your ~/.bashrc or ~/.zshrc:\n\n")
-	fmt.Printf("export PATH=$PATH:$HOME/.md2slack\n\n")
-	fmt.Printf("Then run: source ~/.bashrc\n")
+	log.Printf("\nInstallation successful!\n")
+	log.Printf("Please add the following to your ~/.bashrc or ~/.zshrc:\n\n")
+	log.Printf("export PATH=$PATH:$HOME/.md2slack\n\n")
+	log.Printf("Then run: source ~/.bashrc\n")
 }

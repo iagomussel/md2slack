@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -269,6 +270,62 @@ func parseValue(val string) interface{} {
 	return val
 }
 
+// coerceInt converts v to int if it is string or float; otherwise returns ok=false.
+func coerceInt(v interface{}) (int, bool) {
+	if v == nil {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case int:
+		return val, true
+	case float64:
+		return int(val), true
+	case string:
+		s := strings.TrimSpace(val)
+		if i, err := strconv.Atoi(s); err == nil {
+			return i, true
+		}
+		// First token might be the number when LLM concatenates e.g. "0 estimated_hours=6"
+		if first := strings.Fields(s); len(first) > 0 {
+			if i, err := strconv.Atoi(first[0]); err == nil {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// extractHoursFromIndexString parses "0 estimated_hours=6" or "0 hours=6" and returns (0, 6, true).
+func extractHoursFromIndexString(s string) (index int, hours int, ok bool) {
+	index, ok = coerceInt(s)
+	if !ok {
+		return 0, 0, false
+	}
+	hoursRe := regexp.MustCompile(`(?:estimated_hours|hours)\s*[=:]\s*(\d+)`)
+	if m := hoursRe.FindStringSubmatch(s); len(m) >= 2 {
+		if h, err := strconv.Atoi(m[1]); err == nil {
+			return index, h, true
+		}
+	}
+	return index, 0, ok
+}
+
+// splitIndexAndDetails handles "0 \"Added details...\"" so index=0, details="Added details..."
+func splitIndexAndDetails(s string) (index int, details string, ok bool) {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0, "", false
+	}
+	if i, err := strconv.Atoi(fields[0]); err == nil {
+		if len(fields) > 1 {
+			details = strings.TrimSpace(strings.Join(fields[1:], " "))
+			details = strings.Trim(details, "\"")
+		}
+		return i, details, true
+	}
+	return 0, "", false
+}
+
 func normalizeToolParams(tool string, params map[string]interface{}) map[string]interface{} {
 	// Global normalizations
 	if v, ok := params["task_id"]; ok {
@@ -284,6 +341,64 @@ func normalizeToolParams(tool string, params map[string]interface{}) map[string]
 	if v, ok := params["technical_why"]; ok {
 		if _, has := params["details"]; !has {
 			params["details"] = v
+		}
+	}
+
+	// Coerce index to int for tools that require it (so JSON unmarshal in tools succeeds)
+	indexTools := map[string]bool{
+		"add_time": true, "add_details": true, "add_commit_reference": true,
+		"edit_task": true, "update_task": true, "delete_task": true, "remove_task": true,
+		"split_task": true,
+	}
+	if indexTools[tool] {
+		if v := params["index"]; v != nil {
+			s, isStr := v.(string)
+			if tool == "add_time" && isStr {
+				if idx, hours, ok := extractHoursFromIndexString(s); ok {
+					params["index"] = idx
+					if hours > 0 && params["hours"] == nil {
+						params["hours"] = hours
+					}
+				}
+			} else if tool == "add_details" && isStr && params["details"] == nil {
+				if idx, details, ok := splitIndexAndDetails(s); ok {
+					params["index"] = idx
+					if details != "" {
+						params["details"] = details
+					}
+				}
+			} else if idx, ok := coerceInt(v); ok {
+				params["index"] = idx
+			}
+		}
+	}
+
+	// add_time: ensure hours is int; accept estimated_hours as alias
+	if tool == "add_time" {
+		if v := params["hours"]; v != nil {
+			if h, ok := coerceInt(v); ok {
+				params["hours"] = h
+			}
+		} else if v := params["estimated_hours"]; v != nil {
+			if h, ok := coerceInt(v); ok {
+				params["hours"] = h
+			}
+		}
+	}
+
+	// add_commit_reference: accept "commit" as alias for "hash"
+	if tool == "add_commit_reference" {
+		if v, ok := params["commit"]; ok {
+			if _, has := params["hash"]; !has {
+				params["hash"] = castString(v)
+			}
+			delete(params, "commit")
+		}
+		if v, ok := params["commit_hash"]; ok {
+			if _, has := params["hash"]; !has {
+				params["hash"] = castString(v)
+			}
+			delete(params, "commit_hash")
 		}
 	}
 

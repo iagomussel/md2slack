@@ -2,6 +2,7 @@ package llm
 
 import (
 	"fmt"
+	"log"
 	"md2slack/internal/gitdiff"
 	"os"
 	"os/exec"
@@ -79,6 +80,63 @@ func getCodebaseContext(query string, path string, maxResults int) (string, erro
 	return sb.String(), nil
 }
 
+// ExtractPythonBlocks returns all ```python ... ``` code blocks from text (content between fences only).
+func ExtractPythonBlocks(text string) []string {
+	var blocks []string
+	const (
+		prefix = "```python"
+		end    = "```"
+	)
+	s := text
+	for {
+		i := strings.Index(s, prefix)
+		if i == -1 {
+			break
+		}
+		start := i + len(prefix)
+		// Allow optional newline after ```python
+		if start < len(s) && s[start] == '\n' {
+			start++
+		}
+		j := strings.Index(s[start:], end)
+		if j == -1 {
+			break
+		}
+		blocks = append(blocks, strings.TrimSpace(s[start:start+j]))
+		s = s[start+j+len(end):]
+	}
+	return blocks
+}
+
+// RunPythonInDir runs code with python3 in dir (or current dir if dir is empty). Returns stdout, stderr, and error.
+func RunPythonInDir(dir string, code string) (stdout, stderr string, err error) {
+	tmp, err := os.CreateTemp("", "md2slack-python-*.py")
+	if err != nil {
+		return "", "", err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(code); err != nil {
+		return "", "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", "", err
+	}
+	cmd := exec.Command("python3", tmp.Name())
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, errOut := cmd.Output()
+	stderrStr := ""
+	if errOut != nil {
+		if e, ok := errOut.(*exec.ExitError); ok && len(e.Stderr) > 0 {
+			stderrStr = string(e.Stderr)
+		} else {
+			stderrStr = errOut.Error()
+		}
+	}
+	return string(out), stderrStr, errOut
+}
+
 func toolErrorSummary(log string) string {
 	var errors []string
 	lines := strings.Split(log, "\n")
@@ -153,6 +211,10 @@ func convertToLLMCMessages(messages []OpenAIMessage, system string) []llms.Messa
 }
 
 func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, string, string) {
+	return ApplyToolsWithContext(tools, tasks, allowedCommits, "", "")
+}
+
+func ApplyToolsWithContext(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map[string]struct{}, repoName, date string) ([]gitdiff.TaskChange, string, string) {
 	var logs []string
 	var status string
 	for _, toolCall := range tools {
@@ -166,6 +228,8 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 				continue
 			}
 			newTask := gitdiff.TaskChange{
+				RepoName:   repoName,
+				Date:       date,
 				TaskIntent: intent,
 				Title:      castString(params["title"]),
 				Details:    castString(params["details"]),
@@ -222,6 +286,9 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 
 		case "add_commit_reference":
 			idx, ok := castInt(params["index"])
+			if ok && idx == -1 && len(tasks) > 0 {
+				idx = len(tasks) - 1
+			}
 			if !ok || idx < 0 || idx >= len(tasks) {
 				logs = append(logs, "Error: invalid task index for commit reference")
 				continue
@@ -256,6 +323,9 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 
 		case "add_details":
 			idx, ok := castInt(params["index"])
+			if ok && idx == -1 && len(tasks) > 0 {
+				idx = len(tasks) - 1
+			}
 			if !ok || idx < 0 || idx >= len(tasks) {
 				continue
 			}
@@ -272,6 +342,9 @@ func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map
 
 		case "add_time":
 			idx, ok := castInt(params["index"])
+			if ok && idx == -1 && len(tasks) > 0 {
+				idx = len(tasks) - 1
+			}
 			if !ok || idx < 0 || idx >= len(tasks) {
 				continue
 			}
@@ -356,9 +429,9 @@ func showStateDashboard(commitHash string, tasks []gitdiff.TaskChange, lastLog s
 	if quiet {
 		return
 	}
-	fmt.Printf("\r  [Turn %d] Incorporating %s | Current Tasks: %d                     \n", turn+1, commitHash, len(tasks))
+	log.Printf("\r  [Turn %d] Incorporating %s | Current Tasks: %d                     \n", turn+1, commitHash, len(tasks))
 	if strings.Contains(strings.ToLower(lastLog), "error") || strings.Contains(strings.ToLower(lastLog), "critical") {
-		fmt.Printf("    > %s\n", lastLog)
+		log.Printf("    > %s\n", lastLog)
 	}
 }
 
@@ -366,22 +439,22 @@ func PrintMarkdownTasks(tasks []gitdiff.TaskChange, quiet bool) {
 	if quiet {
 		return
 	}
-	fmt.Println("\n--- DEBUG: Current Task List ---")
+	log.Println("\n--- DEBUG: Current Task List ---")
 	for i, t := range tasks {
-		fmt.Printf("[%d] **%s** (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType)
+		log.Printf("[%d] **%s** (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType)
 		if t.Details != "" {
 			lines := strings.Split(t.Details, "\n")
 			for _, l := range lines {
 				if strings.TrimSpace(l) != "" {
-					fmt.Printf("    - %s\n", l)
+					log.Printf("    - %s\n", l)
 				}
 			}
 		}
 		if len(t.Commits) > 0 {
-			fmt.Printf("    commits: `%s`\n", strings.Join(t.Commits, "`, `"))
+			log.Printf("    commits: `%s`\n", strings.Join(t.Commits, "`, `"))
 		}
 	}
-	fmt.Println("--------------------------------")
+	log.Println("--------------------------------")
 }
 
 func PruneTasks(tasks []gitdiff.TaskChange) []gitdiff.TaskChange {

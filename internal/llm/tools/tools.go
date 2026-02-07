@@ -29,9 +29,9 @@ func NewTaskTools(repoName string, date string, currentTasks []gitdiff.TaskChang
 		CreateTask:         &CreateTaskTool{RepoName: repoName, Date: date, Tasks: ptr},
 		UpdateTask:         &UpdateTaskTool{RepoName: repoName, Date: date, Tasks: ptr},
 		DeleteTask:         &DeleteTaskTool{RepoName: repoName, Date: date, Tasks: ptr},
-		AddDetails:         &AddDetailsTool{Tasks: ptr},
-		AddTime:            &AddTimeTool{Tasks: ptr},
-		AddCommitReference: &AddCommitReferenceTool{Tasks: ptr},
+		AddDetails:         &AddDetailsTool{RepoName: repoName, Date: date, Tasks: ptr},
+		AddTime:            &AddTimeTool{RepoName: repoName, Date: date, Tasks: ptr},
+		AddCommitReference: &AddCommitReferenceTool{RepoName: repoName, Date: date, Tasks: ptr},
 	}
 }
 

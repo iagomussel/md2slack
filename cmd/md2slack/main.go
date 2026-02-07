@@ -1,3 +1,4 @@
+// Build with: go build ./cmd/md2slack  (do not build main.go alone)
 package main
 
 import (
