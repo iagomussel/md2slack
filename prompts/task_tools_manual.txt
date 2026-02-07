@@ -13,5 +13,5 @@ Workflow:
 - You work in turns. You can call multiple tools at once.
 - After tools, you see the "Execution Log". If a tool failed, fix it immediately.
 - Return without calling any tools ONLY when:
-  a) Technical details for all tasks are present.
+  a) Technical Details for all tasks are present.
   b) The task list correctly reflects the extra context.

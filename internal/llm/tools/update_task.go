@@ -12,7 +12,7 @@ import (
 type UpdateTaskTool struct {
 	RepoName string
 	Date     string
-	Tasks    []gitdiff.TaskChange
+	Tasks    *[]gitdiff.TaskChange
 }
 
 func (t *UpdateTaskTool) Name() string {
@@ -25,29 +25,32 @@ Parameters (JSON):
 {
   "index": 0,
   "title": "string - new title (optional)",
-  "description": "string - new description (optional)",
+  "details": "string - new details (optional)",
   "time_estimate": "string - new estimate (optional)",
   "intent": "string - new intent (optional)"
 }`
 }
 
 func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error) {
+	fmt.Println("update_task called with input:", input)
 	var params struct {
 		Index        *int    `json:"index,omitempty"`
 		TaskID       *string `json:"task_id,omitempty"`
 		Title        *string `json:"title,omitempty"`
-		Description  *string `json:"description,omitempty"`
+		Details      *string `json:"details,omitempty"`
 		TimeEstimate *string `json:"time_estimate,omitempty"`
 		Intent       *string `json:"intent,omitempty"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		return "", fmt.Errorf("invalid parameters: %w", err)
+		fmt.Println("ERROR:invalid parameters", err)
+		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
 	if err != nil {
-		return "", err
+		fmt.Println("ERROR:failed to load tasks", err)
+		return "ERROR:failed to load tasks", err
 	}
 	var taskID string
 	if params.TaskID != nil && *params.TaskID != "" {
@@ -55,11 +58,13 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 	} else if params.Index != nil {
 		idx := *params.Index
 		if idx < 0 || idx >= len(tasks) {
-			return "", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
+			fmt.Println("ERROR:index out of bounds", idx)
+			return "ERROR:index out of bounds", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
 		}
 		taskID = tasks[idx].ID
 	} else {
-		return "", fmt.Errorf("task_id or index is required")
+		fmt.Println("ERROR:task_id or index is required")
+		return "ERROR:task_id or index is required", fmt.Errorf("task_id or index is required")
 	}
 	var task *gitdiff.TaskChange
 	for i := range tasks {
@@ -69,14 +74,15 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 		}
 	}
 	if task == nil {
-		return "", fmt.Errorf("task_id %s not found", taskID)
+		fmt.Printf("ERROR:task_id %s not found\n", taskID)
+		return "ERROR:task_id %s not found", fmt.Errorf("task_id %s not found", taskID)
 	}
 
 	if params.Title != nil {
 		task.Title = *params.Title
 	}
-	if params.Description != nil {
-		task.Description = *params.Description
+	if params.Details != nil {
+		task.Details = *params.Details
 	}
 	if params.TimeEstimate != nil {
 		task.TimeEstimate = *params.TimeEstimate
@@ -87,9 +93,10 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 
 	updated, err := storage.UpdateTask(t.RepoName, t.Date, taskID, *task)
 	if err != nil {
-		return "", err
+		fmt.Println("ERROR:failed to update task", err)
+		return "ERROR:failed to update task", err
 	}
-	t.Tasks = updated
+	*t.Tasks = updated
 
 	result := map[string]interface{}{
 		"status":  "updated",
@@ -102,5 +109,5 @@ func (t *UpdateTaskTool) Call(ctx context.Context, input string) (string, error)
 }
 
 func (t *UpdateTaskTool) GetUpdatedTasks() []gitdiff.TaskChange {
-	return t.Tasks
+	return *t.Tasks
 }

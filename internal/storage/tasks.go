@@ -14,7 +14,7 @@ func LoadTasks(repoName string, date string) ([]gitdiff.TaskChange, error) {
 	}
 	// Select all columns
 	rows, err := db.Query(`
-		SELECT id, repo_name, date, title, description, status, intents, usernames, commits, scope, estimated_time, type 
+		SELECT id, repo_name, date, title, details, status, intents, usernames, commits, scope, estimated_time, type 
 		FROM tasks 
 		WHERE repo_name = ? AND date = ? 
 		ORDER BY created_at ASC`, repoName, date)
@@ -38,7 +38,7 @@ func LoadTasks(repoName string, date string) ([]gitdiff.TaskChange, error) {
 			RepoName:       repo,
 			Date:           d,
 			Title:          title,
-			Description:    desc,
+			Details:        desc,
 			Status:         status,
 			TaskIntent:     intent,
 			Usernames:      splitComma(users),
@@ -68,10 +68,10 @@ func CreateTask(repoName string, date string, task gitdiff.TaskChange) (string, 
 
 	_, err := db.Exec(`
 		INSERT INTO tasks (
-			id, repo_name, date, title, description, status, intents, usernames, commits, scope, estimated_time, type
+			id, repo_name, date, title, details, status, intents, usernames, commits, scope, estimated_time, type
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, repoName, date,
-		task.Title, task.Description, task.Status, task.TaskIntent,
+		task.Title, task.Details, task.Status, task.TaskIntent,
 		joinComma(task.Usernames), joinComma(task.Commits), task.Scope, int(task.EstimatedHours), task.TaskType,
 	)
 	if err != nil {
@@ -90,9 +90,9 @@ func UpdateTask(repoName string, date string, taskID string, task gitdiff.TaskCh
 
 	res, err := db.Exec(`
 		UPDATE tasks SET 
-			title = ?, description = ?, status = ?, intents = ?, usernames = ?, commits = ?, scope = ?, estimated_time = ?, type = ?, updated_at = CURRENT_TIMESTAMP 
+			title = ?, details = ?, status = ?, intents = ?, usernames = ?, commits = ?, scope = ?, estimated_time = ?, type = ?, updated_at = CURRENT_TIMESTAMP 
 		WHERE repo_name = ? AND date = ? AND id = ?`,
-		task.Title, task.Description, task.Status, task.TaskIntent,
+		task.Title, task.Details, task.Status, task.TaskIntent,
 		joinComma(task.Usernames), joinComma(task.Commits), task.Scope, int(task.EstimatedHours), task.TaskType,
 		repoName, date, taskID,
 	)
@@ -156,7 +156,7 @@ func ReplaceTasks(repoName string, date string, tasks []gitdiff.TaskChange) erro
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO tasks (
-			id, repo_name, date, title, description, status, intents, usernames, commits, scope, estimated_time, type
+			id, repo_name, date, title, Details, status, intents, usernames, commits, scope, estimated_time, type
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
@@ -170,7 +170,7 @@ func ReplaceTasks(repoName string, date string, tasks []gitdiff.TaskChange) erro
 		}
 		if _, err = stmt.Exec(
 			task.ID, repoName, date,
-			task.Title, task.Description, task.Status, task.TaskIntent,
+			task.Title, task.Details, task.Status, task.TaskIntent,
 			joinComma(task.Usernames), joinComma(task.Commits), task.Scope, int(task.EstimatedHours), task.TaskType,
 		); err != nil {
 			_ = tx.Rollback()

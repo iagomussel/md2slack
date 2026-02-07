@@ -270,6 +270,23 @@ func parseValue(val string) interface{} {
 }
 
 func normalizeToolParams(tool string, params map[string]interface{}) map[string]interface{} {
+	// Global normalizations
+	if v, ok := params["task_id"]; ok {
+		if _, has := params["index"]; !has {
+			params["index"] = v
+		}
+	}
+	if v, ok := params["task_index"]; ok {
+		if _, has := params["index"]; !has {
+			params["index"] = v
+		}
+	}
+	if v, ok := params["technical_why"]; ok {
+		if _, has := params["details"]; !has {
+			params["details"] = v
+		}
+	}
+
 	switch tool {
 	case "create_task", "update_task":
 		if v, ok := params["task_intent"]; ok {
@@ -289,6 +306,12 @@ func normalizeToolParams(tool string, params map[string]interface{}) map[string]
 				params["index"] = v
 			}
 			delete(params, "id")
+		}
+	case "merge_tasks":
+		if v, ok := params["task_ids"]; ok {
+			if _, has := params["indices"]; !has {
+				params["indices"] = v
+			}
 		}
 	}
 	return params

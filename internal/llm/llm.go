@@ -1,48 +1,39 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm/tools"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 type LLMOptions struct {
-	Provider      string
-	Temperature   float64
-	TopP          float64
-	RepeatPenalty float64
-	ContextSize   int
-	ModelName     string
-	BaseUrl       string
-	Token         string
-	RepoName      string
-	Date          string
-	Quiet         bool
-	OnToolLog     func(string)
-	OnToolStatus  func(string)
-	OnLLMLog      func(string)
-	OnStreamChunk func(string)         // Called for each text chunk during streaming
-	OnToolStart   func(string, string) // Called when a tool starts: (toolName, toolID)
-	OnToolEnd     func(string, string) // Called when a tool ends: (toolName, result)
-	Timeout       time.Duration
+	Provider        string
+	Temperature     float64
+	TopP            float64
+	RepeatPenalty   float64
+	ContextSize     int
+	ModelName       string
+	BaseUrl         string
+	Token           string
+	RepoName        string
+	Date            string
+	Quiet           bool
+	OnToolLog       func(string)
+	OnToolStatus    func(string)
+	OnToolLogLegacy func(string) // For backward compatibility if needed, but we should use Agent
+	OnLLMLog        func(string)
+	OnStreamChunk   func(string)
+	OnToolStart     func(toolName string, paramsJSON string)
+	OnToolEnd       func(toolName string, resultJSON string)
+	OnTasksUpdate   func(tasks []gitdiff.TaskChange)
+	Timeout         time.Duration
 }
 
-// OpenAIMessage is now shared with webui, but we keep it here for internal use.
-// We should probably move this to a shared types package, but for now we'll alias or duplicate if needed.
-// IMPORTANT: webui.OpenAIMessage and llm.OpenAIMessage must be compatible in structure.
 type OpenAIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -53,54 +44,25 @@ type ToolCall struct {
 	Parameters map[string]interface{} `json:"parameters"`
 }
 
-func getNativeTools() []llms.Tool {
-	return tools.GetLLMDefinitions()
-}
-
 func (tc *ToolCall) UnmarshalJSON(data []byte) error {
 	type Alias ToolCall
 	var aux Alias
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-
-	// If we have a nested parameters field, use it
 	if aux.Parameters != nil {
 		tc.Tool = aux.Tool
 		tc.Parameters = aux.Parameters
 		return nil
 	}
-
-	// Otherwise, treat the entire object as parameters, excluding the "tool" key
 	var flat map[string]interface{}
 	if err := json.Unmarshal(data, &flat); err != nil {
 		return err
 	}
-
-	tc.Tool = castString(flat["tool"])
+	tc.Tool = strings.ToLower(castString(flat["tool"]))
 	delete(flat, "tool")
 	tc.Parameters = flat
-
 	return nil
-}
-
-func readPromptFile(filename string) string {
-	// Try local prompts directory first
-	content, err := os.ReadFile(filepath.Join("prompts", filename))
-	if err == nil {
-		return string(content)
-	}
-
-	// Try ~/.md2slack/prompts/
-	home, err := os.UserHomeDir()
-	if err == nil {
-		content, err = os.ReadFile(filepath.Join(home, ".md2slack", "prompts", filename))
-		if err == nil {
-			return string(content)
-		}
-	}
-
-	return ""
 }
 
 func ExtractCommitIntent(change gitdiff.SemanticChange, commitMsg string, options LLMOptions) (*gitdiff.CommitChange, error) {
@@ -108,12 +70,10 @@ func ExtractCommitIntent(change gitdiff.SemanticChange, commitMsg string, option
 	if system == "" {
 		return nil, errors.New("prompt file commit_intent_extractor.txt not found")
 	}
-
 	prompt := fmt.Sprintf("Commit: %s\nMessage: %s\nSignals: %v", change.CommitHash, commitMsg, change.Signals)
-
 	var out gitdiff.CommitChange
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-	err := callJSON(messages, system, options, &out)
+	agent := NewAgent(options, nil)
+	err := agent.CallJSON(context.Background(), []OpenAIMessage{{Role: "user", Content: prompt}}, system, &out)
 	return &out, err
 }
 
@@ -122,14 +82,12 @@ func SummarizeCommit(commit gitdiff.Commit, diff gitdiff.CommitDiff, semantic gi
 	if system == "" {
 		return nil, errors.New("prompt file commit_summarizer.txt not found")
 	}
-
 	semanticJSON, _ := json.MarshalIndent(semantic, "", "  ")
 	prompt := fmt.Sprintf("Commit: %s\nMessage: %s\nSemantic (JSON): %s\nRaw Diff:\n%s",
 		commit.Hash, commit.Message, string(semanticJSON), diff.Diff)
-
 	var out gitdiff.CommitSummary
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-	err := callJSON(messages, system, options, &out)
+	agent := NewAgent(options, nil)
+	err := agent.CallJSON(context.Background(), []OpenAIMessage{{Role: "user", Content: prompt}}, system, &out)
 	if err == nil && out.CommitHash == "" {
 		out.CommitHash = commit.Hash
 	}
@@ -145,12 +103,9 @@ func SummarizeCommits(commits []gitdiff.Commit, diffs []gitdiff.CommitDiff, sema
 	for _, s := range semantics {
 		semMap[s.CommitHash] = s
 	}
-
 	var out []gitdiff.CommitSummary
 	for _, c := range commits {
-		diff := diffMap[c.Hash]
-		sem := semMap[c.Hash]
-		summary, err := SummarizeCommit(c, diff, sem, options)
+		summary, err := SummarizeCommit(c, diffMap[c.Hash], semMap[c.Hash], options)
 		if err != nil {
 			return out, err
 		}
@@ -160,95 +115,41 @@ func SummarizeCommits(commits []gitdiff.Commit, diffs []gitdiff.CommitDiff, sema
 	return out, nil
 }
 
-func FallbackTasksFromSummaries(summaries []gitdiff.CommitSummary) []gitdiff.TaskChange {
-	var tasks []gitdiff.TaskChange
-	for _, s := range summaries {
-		intent := strings.TrimSpace(s.Summary)
-		if intent == "" {
-			continue
-		}
-		task := gitdiff.TaskChange{
-			TaskType:   "delivery",
-			TaskIntent: intent,
-			Scope:      s.Area,
-			Commits:    []string{s.CommitHash},
-		}
-		if s.Impact != "" {
-			task.TechnicalWhy = s.Impact
-		}
-		tasks = append(tasks, task)
-	}
-	return tasks
-}
-
 func SynthesizeTasks(commits []gitdiff.CommitChange, previousTasks []gitdiff.TaskChange, extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
 	system := readPromptFile("task_synthesizer.txt")
 	if system == "" {
 		return nil, errors.New("prompt file task_synthesizer.txt not found")
 	}
-
 	commitsJSON, _ := json.MarshalIndent(commits, "", "  ")
 	prevJSON, _ := json.MarshalIndent(previousTasks, "", "  ")
-
 	prompt := fmt.Sprintf("Extra Context: %s\nPrevious Tasks: %s\nCommits: %s", extraContext, string(prevJSON), string(commitsJSON))
-
 	var out []gitdiff.TaskChange
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-	err := callJSON(messages, system, options, &out)
+	agent := NewAgent(options, nil)
+	err := agent.CallJSON(context.Background(), []OpenAIMessage{{Role: "user", Content: prompt}}, system, &out)
 	return out, err
 }
+
 func IncorporateExtraContext(extraContext string, options LLMOptions) ([]gitdiff.TaskChange, error) {
 	if extraContext == "" {
 		return nil, nil
 	}
-
 	system := readPromptFile("task_tools_manual.txt")
 	if system == "" {
 		return nil, errors.New("prompt file task_tools_manual.txt not found")
 	}
-
 	prompt := fmt.Sprintf("USER EXTRA CONTEXT:\n%s\n\nPlease create initial tasks based ON THIS CONTEXT. Use the tools provided.", extraContext)
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-
 	var currentTasks []gitdiff.TaskChange
-	// Iterative Loop
-	for turn := 0; turn < 5; turn++ {
-		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools, getNativeTools()...)
-		if err != nil {
-			return currentTasks, err
-		}
-		if len(tools) == 0 {
-			break
-		}
-
-		// Apply tools
-		var log string
-		var status string
-		currentTasks, log, status = ApplyTools(tools, currentTasks, nil)
-		emitToolUpdates(options, log, status)
-		for i := range currentTasks {
-			currentTasks[i].IsManual = true
-		}
-
-		showStateDashboard("User Context", currentTasks, log, turn, options.Quiet)
-		PrintMarkdownTasks(currentTasks, options.Quiet)
-
-		// Update history for next turn
-		toolsJSON, _ := json.Marshal(tools)
-		messages = append(messages, OpenAIMessage{Role: "assistant", Content: string(toolsJSON)})
-		var feedbackSB strings.Builder
-		feedbackSB.WriteString("Tool Execution Log:\n")
-		feedbackSB.WriteString(log)
-		if errs := toolErrorSummary(log); errs != "" {
-			feedbackSB.WriteString("\n\nTool Errors:\n")
-			feedbackSB.WriteString(errs)
-		}
-		feedbackSB.WriteString("\n\nContinue if more tasks need to be created from the extra context, otherwise return [].")
-		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
+	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
+	agent := NewAgent(options, taskTools)
+	_, _, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	if err != nil {
+		return nil, err
 	}
-
-	return currentTasks, nil
+	updated := taskTools.GetUpdatedTasks()
+	for i := range updated {
+		updated[i].IsManual = true
+	}
+	return updated, nil
 }
 
 func GenerateTasksFromContext(commits []gitdiff.Commit, summaries []gitdiff.CommitSummary, semantics []gitdiff.CommitSemantic, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
@@ -256,62 +157,18 @@ func GenerateTasksFromContext(commits []gitdiff.Commit, summaries []gitdiff.Comm
 	if system == "" {
 		return nil, errors.New("prompt file task_tools_generate.txt not found")
 	}
-
 	commitsJSON, _ := json.MarshalIndent(commits, "", "  ")
 	summaryJSON, _ := json.MarshalIndent(summaries, "", "  ")
 	semanticJSON, _ := json.MarshalIndent(semantics, "", "  ")
-	allowedList := sortedCommitList(allowedCommits)
-	allowedText := "(none)"
-	if len(allowedList) > 0 {
-		allowedText = strings.Join(allowedList, ", ")
-	}
-
+	allowedText := strings.Join(sortedCommitList(allowedCommits), ", ")
 	prompt := fmt.Sprintf("Extra Context: %s\nValid Phase 1 Commits: %s\nCommits (JSON): %s\nCommit Summaries (JSON): %s\nSemantic (JSON): %s",
 		extraContext, allowedText, string(commitsJSON), string(summaryJSON), string(semanticJSON))
 
 	var currentTasks []gitdiff.TaskChange
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-
-	for turn := 0; turn < 8; turn++ {
-		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools, getNativeTools()...)
-		if err != nil {
-			return currentTasks, err
-		}
-		if len(tools) == 0 {
-			break
-		}
-
-		var log string
-		var status string
-		currentTasks, log, status = ApplyTools(tools, currentTasks, allowedCommits)
-		emitToolUpdates(options, log, status)
-
-		showStateDashboard("Task Gen", currentTasks, log, turn, options.Quiet)
-		PrintMarkdownTasks(currentTasks, options.Quiet)
-
-		toolsJSON, _ := json.Marshal(tools)
-		messages = append(messages, OpenAIMessage{Role: "assistant", Content: string(toolsJSON)})
-		var feedbackSB strings.Builder
-		feedbackSB.WriteString("Tool Execution Log:\n")
-		feedbackSB.WriteString(log)
-		if errs := toolErrorSummary(log); errs != "" {
-			feedbackSB.WriteString("\n\nTool Errors:\n")
-			feedbackSB.WriteString(errs)
-		}
-		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
-		for i, t := range currentTasks {
-			feedbackSB.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
-			if t.TechnicalWhy != "" {
-				feedbackSB.WriteString(fmt.Sprintf("    Details: %s\n", t.TechnicalWhy))
-			}
-			feedbackSB.WriteString(fmt.Sprintf("    Commits: %v\n", t.Commits))
-		}
-		feedbackSB.WriteString("\nContinue if more tasks need to be created, otherwise return [].")
-		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
-	}
-
-	return currentTasks, nil
+	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
+	agent := NewAgent(options, taskTools)
+	_, _, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	return taskTools.GetUpdatedTasks(), err
 }
 
 func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, summaries []gitdiff.CommitSummary, semantics []gitdiff.CommitSemantic, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
@@ -319,62 +176,18 @@ func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, su
 	if system == "" {
 		return nil, errors.New("prompt file task_tools_review.txt not found")
 	}
-
 	commitsJSON, _ := json.MarshalIndent(commits, "", "  ")
 	summaryJSON, _ := json.MarshalIndent(summaries, "", "  ")
 	semanticJSON, _ := json.MarshalIndent(semantics, "", "  ")
 	tasksJSON, _ := json.MarshalIndent(currentTasks, "", "  ")
-	allowedList := sortedCommitList(allowedCommits)
-	allowedText := "(none)"
-	if len(allowedList) > 0 {
-		allowedText = strings.Join(allowedList, ", ")
-	}
-
+	allowedText := strings.Join(sortedCommitList(allowedCommits), ", ")
 	prompt := fmt.Sprintf("Extra Context: %s\nValid Phase 1 Commits: %s\nCommits (JSON): %s\nCommit Summaries (JSON): %s\nSemantic (JSON): %s\nCurrent Tasks (JSON): %s",
 		extraContext, allowedText, string(commitsJSON), string(summaryJSON), string(semanticJSON), string(tasksJSON))
 
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-
-	for turn := 0; turn < 8; turn++ {
-		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools, getNativeTools()...)
-		if err != nil {
-			return currentTasks, err
-		}
-		if len(tools) == 0 {
-			break
-		}
-
-		var log string
-		var status string
-		currentTasks, log, status = ApplyTools(tools, currentTasks, allowedCommits)
-		emitToolUpdates(options, log, status)
-
-		showStateDashboard("Task Review", currentTasks, log, turn, options.Quiet)
-		PrintMarkdownTasks(currentTasks, options.Quiet)
-
-		toolsJSON, _ := json.Marshal(tools)
-		messages = append(messages, OpenAIMessage{Role: "assistant", Content: string(toolsJSON)})
-		var feedbackSB strings.Builder
-		feedbackSB.WriteString("Tool Execution Log:\n")
-		feedbackSB.WriteString(log)
-		if errs := toolErrorSummary(log); errs != "" {
-			feedbackSB.WriteString("\n\nTool Errors:\n")
-			feedbackSB.WriteString(errs)
-		}
-		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
-		for i, t := range currentTasks {
-			feedbackSB.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
-			if t.TechnicalWhy != "" {
-				feedbackSB.WriteString(fmt.Sprintf("    Details: %s\n", t.TechnicalWhy))
-			}
-			feedbackSB.WriteString(fmt.Sprintf("    Commits: %v\n", t.Commits))
-		}
-		feedbackSB.WriteString("\nContinue reviewing until duplicates and discrepancies are resolved; return [] only when done.")
-		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
-	}
-
-	return currentTasks, nil
+	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
+	agent := NewAgent(options, taskTools)
+	_, _, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	return taskTools.GetUpdatedTasks(), err
 }
 
 func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskChange, manualTasks []gitdiff.TaskChange, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
@@ -382,7 +195,6 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 	if system == "" {
 		return nil, errors.New("prompt file task_tools.txt not found")
 	}
-
 	var manualSB strings.Builder
 	for _, t := range manualTasks {
 		manualSB.WriteString(fmt.Sprintf("- %s (%s)\n", t.TaskIntent, t.Scope))
@@ -395,228 +207,81 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 	var sb strings.Builder
 	for i, t := range currentTasks {
 		sb.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
-		if t.TechnicalWhy != "" {
-			parts := strings.Split(t.TechnicalWhy, "\n")
-			for _, p := range parts {
-				sb.WriteString(fmt.Sprintf("    - %s\n", p))
-			}
-		}
 	}
 	tasksState := sb.String()
 	if tasksState == "" {
 		tasksState = "(no commit tasks yet)"
 	}
 
-	var allowedList []string
-	for hash := range allowedCommits {
-		allowedList = append(allowedList, hash)
-	}
-	sort.Strings(allowedList)
-	allowedText := "(none)"
-	if len(allowedList) > 0 {
-		allowedText = strings.Join(allowedList, ", ")
-	}
-
+	allowedText := strings.Join(sortedCommitList(allowedCommits), ", ")
 	commitJSON, _ := json.MarshalIndent(commit, "", "  ")
-	prompt := fmt.Sprintf("Extra Context: %s\nManual Tasks (Read-Only Context):\n%s\nCurrent Commit-Based Tasks (State):\n%s\nValid Phase 1 Commits: %s\nNew Commit to Incorporate: %s", extraContext, manualContext, tasksState, allowedText, string(commitJSON))
+	prompt := fmt.Sprintf("Extra Context: %s\nManual Tasks (Context):\n%s\nCurrent State:\n%s\nValid Commits: %s\nNew Commit: %s",
+		extraContext, manualContext, tasksState, allowedText, string(commitJSON))
 
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-
-	// Iterative Loop: Allow the LLM to call tools and see results
-	for turn := 0; turn < 8; turn++ {
-		var tools []ToolCall
-		err := callJSON(messages, system, options, &tools, getNativeTools()...)
-		if err != nil {
-			return currentTasks, err
-		}
-
-		// Apply tools and update state
-		var log string
-		var status string
-		currentTasks, log, status = ApplyTools(tools, currentTasks, allowedCommits)
-		emitToolUpdates(options, log, status)
-
-		// REAL-TIME VISUALIZATION: Show the state dashboard to the user
-		showStateDashboard(commit.CommitHash, currentTasks, log, turn, options.Quiet)
-		PrintMarkdownTasks(currentTasks, options.Quiet)
-
-		// VALIDATION: Check if we can stop
-		isLinked := false
-		for _, t := range currentTasks {
-			for _, c := range t.Commits {
-				if c == commit.CommitHash {
-					isLinked = true
-					break
-				}
-			}
-		}
-
-		missingDetails := false
-		for i, t := range currentTasks {
-			if t.TechnicalWhy == "" || strings.Contains(strings.ToLower(t.TechnicalWhy), "no details") {
-				missingDetails = true
-				log += fmt.Sprintf("\nError: Task %d is missing technical details.", i)
-			}
-		}
-
-		// If LLM returned empty tools but validation failed, force a retry Turn
-		if len(tools) == 0 {
-			if !isLinked {
-				log += fmt.Sprintf("\nCRITICAL: Commit %s is NOT linked to any task. You MUST call add_commit_reference.", commit.CommitHash)
-			} else if !missingDetails {
-				// All good, we can stop
-				break
-			}
-		}
-
-		// Prepare feedback for the LLM
-		var feedbackSB strings.Builder
-		feedbackSB.WriteString("Tool Execution Log:\n")
-		feedbackSB.WriteString(log)
-		if errs := toolErrorSummary(log); errs != "" {
-			feedbackSB.WriteString("\n\nTool Errors:\n")
-			feedbackSB.WriteString(errs)
-		}
-		feedbackSB.WriteString("\n\nExtra Context (Instructions):\n")
-		feedbackSB.WriteString(extraContext)
-		feedbackSB.WriteString("\n\nCurrent Tasks (State):\n")
-		for i, t := range currentTasks {
-			feedbackSB.WriteString(fmt.Sprintf("[%d] %s (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType))
-			if t.TechnicalWhy != "" {
-				feedbackSB.WriteString(fmt.Sprintf("    Details: %s\n", t.TechnicalWhy))
-			}
-			feedbackSB.WriteString(fmt.Sprintf("    Commits: %v\n", t.Commits))
-		}
-		feedbackSB.WriteString("\nValid Phase 1 Commits:\n")
-		if len(allowedList) == 0 {
-			feedbackSB.WriteString("(none)\n")
-		} else {
-			feedbackSB.WriteString(strings.Join(allowedList, ", "))
-			feedbackSB.WriteString("\n")
-		}
-
-		if !isLinked {
-			feedbackSB.WriteString(fmt.Sprintf("\nWARNING: Current commit %s is NOT yet linked to any task. Use add_commit_reference to fix this.", commit.CommitHash))
-		}
-
-		feedbackSB.WriteString("\nContinue until all rules are met. Return [] ONLY when done and commit is fully integrated.")
-
-		// Update history
-		var toolsStr string
-		if len(tools) > 0 {
-			toolsJSON, _ := json.Marshal(tools)
-			toolsStr = string(toolsJSON)
-		} else {
-			toolsStr = "[]"
-		}
-		messages = append(messages, OpenAIMessage{Role: "assistant", Content: toolsStr})
-		messages = append(messages, OpenAIMessage{Role: "user", Content: feedbackSB.String()})
-	}
-
-	return currentTasks, nil
-}
-
-func showStateDashboard(commitHash string, tasks []gitdiff.TaskChange, lastLog string, turn int, quiet bool) {
-	if quiet {
-		return
-	}
-	fmt.Printf("\r  [Turn %d] Incorporating %s | Current Tasks: %d                     \n", turn+1, commitHash, len(tasks))
-	// Print simple log if it contains errors
-	if strings.Contains(strings.ToLower(lastLog), "error") || strings.Contains(strings.ToLower(lastLog), "critical") {
-		fmt.Printf("    > %s\n", lastLog)
-	}
-}
-
-func PrintMarkdownTasks(tasks []gitdiff.TaskChange, quiet bool) {
-	if quiet {
-		return
-	}
-	fmt.Println("\n--- DEBUG: Current Task List ---")
-	for i, t := range tasks {
-		fmt.Printf("[%d] **%s** (%s) [%s]\n", i, t.TaskIntent, t.Scope, t.TaskType)
-		if t.TechnicalWhy != "" {
-			lines := strings.Split(t.TechnicalWhy, "\n")
-			for _, l := range lines {
-				if strings.TrimSpace(l) != "" {
-					fmt.Printf("    - %s\n", l)
-				}
-			}
-		}
-		if len(t.Commits) > 0 {
-			fmt.Printf("    commits: `%s`\n", strings.Join(t.Commits, "`, `"))
-		}
-	}
-	fmt.Println("--------------------------------")
-}
-
-func PruneTasks(tasks []gitdiff.TaskChange) []gitdiff.TaskChange {
-	var out []gitdiff.TaskChange
-	for _, t := range tasks {
-		if t.IsHistorical {
-			out = append(out, t)
-			continue
-		}
-		// Preserve if it has a commit OR is a useful shell
-		hasCommits := len(t.Commits) > 0
-		if (hasCommits || t.TaskIntent != "") && t.TaskIntent != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func RefineTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.TaskChange, error) {
-	system := readPromptFile("task_refiner.txt")
-	if system == "" {
-		return tasks, nil // Fallback
-	}
-
-	tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
-	prompt := fmt.Sprintf("Current Task List:\n%s", string(tasksJSON))
-
-	var out []gitdiff.TaskChange
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-	err := callJSON(messages, system, options, &out)
-	if err != nil {
-		fmt.Printf("Warning: task refinement failed: %v. Using unrefined list.\n", err)
-		return tasks, nil
-	}
-
-	// Double prune after refinement to remove any junk the LLM might have introduced
-	out = PruneTasks(out)
-
-	if len(out) == 0 && len(tasks) > 0 {
-		return tasks, nil // Don't return an empty list if refinement wiped it out
-	}
-	return out, nil
+	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
+	agent := NewAgent(options, taskTools)
+	_, _, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	return taskTools.GetUpdatedTasks(), err
 }
 
 func RefineTasksWithPrompt(tasks []gitdiff.TaskChange, userPrompt string, options LLMOptions) ([]gitdiff.TaskChange, error) {
-	if strings.TrimSpace(userPrompt) == "" {
-		return RefineTasks(tasks, options)
-	}
-
 	system := readPromptFile("task_refiner.txt")
 	if system == "" {
-		return tasks, nil // Fallback
+		return tasks, nil
 	}
-
 	tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
 	prompt := fmt.Sprintf("User request:\n%s\n\nCurrent Task List:\n%s", strings.TrimSpace(userPrompt), string(tasksJSON))
-
 	var out []gitdiff.TaskChange
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-	err := callJSON(messages, system, options, &out)
+	agent := NewAgent(options, nil)
+	err := agent.CallJSON(context.Background(), []OpenAIMessage{{Role: "user", Content: prompt}}, system, &out)
 	if err != nil {
-		fmt.Printf("Warning: task refinement (with user prompt) failed: %v. Using unrefined list.\n", err)
 		return tasks, nil
 	}
+	return PruneTasks(out), nil
+}
 
-	out = PruneTasks(out)
-	if len(out) == 0 && len(tasks) > 0 {
-		return tasks, nil
+func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]string, error) {
+	system := readPromptFile("next_actions.txt")
+	if system == "" {
+		return nil, errors.New("prompt file next_actions.txt not found")
 	}
-	return out, nil
+	var cleanTasks []map[string]string
+	for _, t := range tasks {
+		cleanTasks = append(cleanTasks, map[string]string{"intent": t.TaskIntent, "scope": t.Scope, "type": t.TaskType})
+	}
+	inputJSON, _ := json.MarshalIndent(cleanTasks, "", "  ")
+	prompt := fmt.Sprintf("Tasks synthesized for today:\n%s", string(inputJSON))
+	var suggestions []string
+	agent := NewAgent(options, nil)
+	err := agent.CallJSON(context.Background(), []OpenAIMessage{{Role: "user", Content: prompt}}, system, &suggestions)
+	return suggestions, err
+}
+
+func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.GroupedTask, error) {
+	// Simple grouping implementation or LLM-based
+	// For now, let's keep it simple or use a default grouping logic if available in gitdiff
+	return nil, nil // Placeholder or implement if needed
+}
+
+func FallbackTasksFromSummaries(summaries []gitdiff.CommitSummary) []gitdiff.TaskChange {
+	var tasks []gitdiff.TaskChange
+	for _, s := range summaries {
+		if strings.TrimSpace(s.Summary) == "" {
+			continue
+		}
+		tasks = append(tasks, gitdiff.TaskChange{
+			TaskType:   "delivery",
+			TaskIntent: s.Summary,
+			Scope:      s.Area,
+			Commits:    []string{s.CommitHash},
+			Details:    s.Impact,
+		})
+	}
+	return tasks
+}
+
+func RefineTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.TaskChange, error) {
+	return RefineTasksWithPrompt(tasks, "", options)
 }
 
 func EditTasksWithAction(tasks []gitdiff.TaskChange, action string, selected []int, options LLMOptions) ([]gitdiff.TaskChange, error) {
@@ -624,14 +289,12 @@ func EditTasksWithAction(tasks []gitdiff.TaskChange, action string, selected []i
 	if system == "" {
 		return tasks, errors.New("prompt file task_editor.txt not found")
 	}
-
 	tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
 	selectedJSON, _ := json.MarshalIndent(selected, "", "  ")
-	prompt := fmt.Sprintf("Action: %s\nSelected Indices: %s\nTasks: %s", action, string(selectedJSON), string(tasksJSON))
-
+	prompt := fmt.Sprintf("Action: %s\nSelected: %s\nTasks: %s", action, string(selectedJSON), string(tasksJSON))
 	var out []gitdiff.TaskChange
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-	err := callJSON(messages, system, options, &out)
+	agent := NewAgent(options, nil)
+	err := agent.CallJSON(context.Background(), []OpenAIMessage{{Role: "user", Content: prompt}}, system, &out)
 	if err != nil {
 		return tasks, err
 	}
@@ -641,850 +304,16 @@ func EditTasksWithAction(tasks []gitdiff.TaskChange, action string, selected []i
 		return tasks, nil
 	}
 
-	// If the model returned a full list, accept it as-is.
 	if len(out) == len(tasks) {
 		return out, nil
 	}
 
-	// If the model returned only the selected tasks, merge them back.
-	switch action {
-	case "make_longer", "make_shorter", "improve_text":
-		if len(out) == len(normalized) {
-			merged := append([]gitdiff.TaskChange(nil), tasks...)
-			for i, idx := range normalized {
-				merged[idx] = out[i]
-			}
-			return merged, nil
-		}
-		if len(out) == 1 && len(normalized) == 1 {
-			merged := append([]gitdiff.TaskChange(nil), tasks...)
-			merged[normalized[0]] = out[0]
-			return merged, nil
-		}
-	case "split_task":
-		if len(normalized) == 1 && len(out) >= 2 {
-			idx := normalized[0]
-			merged := append([]gitdiff.TaskChange(nil), tasks[:idx]...)
-			merged = append(merged, out...)
-			merged = append(merged, tasks[idx+1:]...)
-			return merged, nil
-		}
-	case "merge_tasks":
-		if len(normalized) >= 2 && len(out) == 1 {
-			first := normalized[0]
-			keep := make([]gitdiff.TaskChange, 0, len(tasks)-len(normalized)+1)
-			for i, t := range tasks {
-				if i == first {
-					keep = append(keep, out[0])
-				}
-				if !indexInSorted(i, normalized) {
-					keep = append(keep, t)
-				}
-			}
-			return keep, nil
+	// Legacy merge logic (simplified)
+	merged := append([]gitdiff.TaskChange(nil), tasks...)
+	if len(out) == len(normalized) {
+		for i, idx := range normalized {
+			merged[idx] = out[i]
 		}
 	}
-
-	// Fallback to original tasks if output shape is unexpected.
-	return tasks, nil
-}
-
-func SuggestNextActions(tasks []gitdiff.TaskChange, options LLMOptions) ([]string, error) {
-	system := readPromptFile("next_actions.txt")
-	if system == "" {
-		return nil, errors.New("prompt file next_actions.txt not found")
-	}
-
-	// Create a clean JSON representing only the essential task info
-	type cleanTask struct {
-		Intent string `json:"intent"`
-		Scope  string `json:"scope"`
-		Type   string `json:"type"`
-	}
-	var cleanTasks []cleanTask
-	for _, t := range tasks {
-		cleanTasks = append(cleanTasks, cleanTask{
-			Intent: t.TaskIntent,
-			Scope:  t.Scope,
-			Type:   t.TaskType,
-		})
-	}
-
-	inputJSON, _ := json.MarshalIndent(cleanTasks, "", "  ")
-	messages := []OpenAIMessage{
-		{Role: "user", Content: fmt.Sprintf("Tasks synthesized for today:\n%s", string(inputJSON))},
-	}
-
-	var suggestions []string
-	err := callJSON(messages, system, options, &suggestions)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(suggestions) == 0 {
-		fmt.Printf("Debug: Stage 3 (Next Actions) returned empty array. Tasks count: %d\n", len(tasks))
-	}
-
-	return suggestions, nil
-}
-
-func normalizeSelected(selected []int, max int) []int {
-	if len(selected) == 0 || max <= 0 {
-		return nil
-	}
-	uniq := make(map[int]struct{}, len(selected))
-	for _, idx := range selected {
-		if idx < 0 || idx >= max {
-			continue
-		}
-		uniq[idx] = struct{}{}
-	}
-	out := make([]int, 0, len(uniq))
-	for idx := range uniq {
-		out = append(out, idx)
-	}
-	sort.Ints(out)
-	return out
-}
-
-func indexInSorted(val int, sorted []int) bool {
-	i := sort.SearchInts(sorted, val)
-	return i < len(sorted) && sorted[i] == val
-}
-
-func ApplyTools(tools []ToolCall, tasks []gitdiff.TaskChange, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, string, string) {
-	var logs []string
-	var status string
-	for _, tc := range tools {
-		params := tc.Parameters
-		switch tc.Tool {
-		case "create_task":
-			intent := castString(params["intent"])
-			if intent == "" {
-				logs = append(logs, "Error: attempt to create task with empty intent")
-				continue
-			}
-			newTask := gitdiff.TaskChange{
-				TaskIntent:  intent,
-				Title:       castString(params["title"]),
-				Description: castString(params["description"]),
-				Scope:       castString(params["scope"]),
-				TaskType:    castString(params["type"]),
-			}
-			if newTask.TaskType == "" {
-				newTask.TaskType = "delivery"
-			}
-			if h, ok := castInt(params["estimated_hours"]); ok {
-				newTask.EstimatedHours = float64(h)
-			}
-			tasks = append(tasks, newTask)
-			logs = append(logs, fmt.Sprintf("Success: created task with index %d", len(tasks)-1))
-			status = fmt.Sprintf("Created task #%d: %s", len(tasks)-1, intent)
-
-		case "edit_task":
-			idx, ok := castInt(params["index"])
-			if !ok || idx < 0 || idx >= len(tasks) {
-				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
-				continue
-			}
-			if intent := castString(params["intent"]); intent != "" {
-				tasks[idx].TaskIntent = intent
-			}
-			if title := castString(params["title"]); title != "" {
-				tasks[idx].Title = title
-			}
-			if description := castString(params["description"]); description != "" {
-				tasks[idx].Description = description
-			}
-			if scope := castString(params["scope"]); scope != "" {
-				tasks[idx].Scope = scope
-			}
-			if h, ok := castInt(params["estimated_hours"]); ok {
-				tasks[idx].EstimatedHours = float64(h)
-			}
-			logs = append(logs, fmt.Sprintf("Success: edited task %d", idx))
-			status = fmt.Sprintf("Edited task #%d", idx)
-
-		case "add_details":
-			idx, ok := castInt(params["index"])
-			if !ok || idx < 0 || idx >= len(tasks) {
-				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
-				continue
-			}
-			detail := castString(params["technical_why"])
-			if detail != "" && !strings.Contains(detail, "...") {
-				if tasks[idx].TechnicalWhy == "" {
-					tasks[idx].TechnicalWhy = detail
-				} else {
-					if !strings.Contains(tasks[idx].TechnicalWhy, detail) {
-						tasks[idx].TechnicalWhy += "\n" + detail
-					}
-				}
-				logs = append(logs, fmt.Sprintf("Success: added detail to task %d", idx))
-				status = fmt.Sprintf("Updated details for task #%d", idx)
-			}
-
-		case "add_time":
-			idx, ok := castInt(params["index"])
-			if !ok || idx < 0 || idx >= len(tasks) {
-				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
-				continue
-			}
-			if h, ok := castInt(params["hours"]); ok {
-				if tasks[idx].EstimatedHours <= 0 {
-					tasks[idx].EstimatedHours = float64(h)
-				} else {
-					newH := tasks[idx].EstimatedHours + float64(h)
-					tasks[idx].EstimatedHours = newH
-				}
-				logs = append(logs, fmt.Sprintf("Success: added %d hours to task %d", h, idx))
-				status = fmt.Sprintf("Updated time for task #%d", idx)
-			}
-
-		case "add_commit_reference":
-			idx, ok := castInt(params["index"])
-			if !ok || idx < 0 || idx >= len(tasks) {
-				logs = append(logs, fmt.Sprintf("Error: index %v is out of bounds (current max: %d)", params["index"], len(tasks)-1))
-				continue
-			}
-			hash := castString(params["hash"])
-			if hash != "" && (allowedCommits == nil || len(allowedCommits) == 0) {
-				logs = append(logs, fmt.Sprintf("Error: commit %s is not a valid Phase 1 commit (no allowed list available)", hash))
-				continue
-			}
-			if hash != "" {
-				if _, ok := allowedCommits[hash]; !ok {
-					logs = append(logs, fmt.Sprintf("Error: commit %s is not a valid Phase 1 commit", hash))
-					continue
-				}
-			}
-			if hash != "" {
-				found := false
-				for _, c := range tasks[idx].Commits {
-					if c == hash {
-						found = true
-						break
-					}
-				}
-				if !found {
-					tasks[idx].Commits = append(tasks[idx].Commits, hash)
-				}
-				logs = append(logs, fmt.Sprintf("Success: added commit %s to task %d", hash, idx))
-				status = fmt.Sprintf("Linked commit %s to task #%d", hash, idx)
-			}
-
-		case "get_codebase_context":
-			query := castString(params["query"])
-			path := castString(params["path"])
-			maxResults, ok := castInt(params["max_results"])
-			if !ok || maxResults <= 0 {
-				maxResults = 20
-			}
-			if query == "" {
-				logs = append(logs, "Error: get_codebase_context requires non-empty query")
-				continue
-			}
-			out, err := getCodebaseContext(query, path, maxResults)
-			if err != nil {
-				logs = append(logs, fmt.Sprintf("Error: get_codebase_context failed: %v", err))
-				continue
-			}
-			if out == "" {
-				logs = append(logs, fmt.Sprintf("Context: no matches for query %q", query))
-				continue
-			}
-			logs = append(logs, fmt.Sprintf("Context (query %q):\n%s", query, out))
-
-		case "merge_tasks":
-			indices := castIntSlice(params["indices"])
-			if len(indices) < 2 {
-				logs = append(logs, "Error: merge_tasks requires at least 2 indices")
-				continue
-			}
-			newIntent := castString(params["new_intent"])
-			newScope := castString(params["new_scope"])
-
-			var mergedCommits []string
-			var mergedHours int
-			var mergedDetails []string
-			var mergedType string
-
-			// Sort indices descending to facilitate removal later if we were doing it in-place
-			// But here we'll just rebuild the list for simplicity.
-			idxMap := make(map[int]bool)
-			for _, idx := range indices {
-				if idx < 0 || idx >= len(tasks) {
-					logs = append(logs, fmt.Sprintf("Error: index %d out of bounds", idx))
-					continue
-				}
-				idxMap[idx] = true
-				t := tasks[idx]
-				mergedCommits = append(mergedCommits, t.Commits...)
-				if t.EstimatedHours > 0 {
-					mergedHours += int(t.EstimatedHours)
-				}
-				if t.TechnicalWhy != "" {
-					mergedDetails = append(mergedDetails, t.TechnicalWhy)
-				}
-				if mergedType == "" {
-					mergedType = t.TaskType
-				}
-			}
-
-			// Deduplicate commits
-			uniqueCommits := make(map[string]bool)
-			var finalCommits []string
-			for _, c := range mergedCommits {
-				if !uniqueCommits[c] {
-					uniqueCommits[c] = true
-					finalCommits = append(finalCommits, c)
-				}
-			}
-
-			newTask := gitdiff.TaskChange{
-				TaskIntent:     newIntent,
-				Scope:          newScope,
-				TaskType:       mergedType,
-				Commits:        finalCommits,
-				EstimatedHours: float64(mergedHours),
-				TechnicalWhy:   strings.Join(mergedDetails, "\n---\n"),
-			}
-
-			// Create new task list without merged ones
-			var newTasks []gitdiff.TaskChange
-			for i, t := range tasks {
-				if !idxMap[i] {
-					newTasks = append(newTasks, t)
-				}
-			}
-			newTasks = append(newTasks, newTask)
-			tasks = newTasks
-			logs = append(logs, fmt.Sprintf("Success: merged tasks %v into new task #%d", indices, len(tasks)-1))
-			status = fmt.Sprintf("Merged %d tasks", len(indices))
-
-		case "split_task":
-			idx, ok := castInt(params["index"])
-			if !ok || idx < 0 || idx >= len(tasks) {
-				logs = append(logs, fmt.Sprintf("Error: index %v out of bounds", params["index"]))
-				continue
-			}
-
-			rawNewTasks, _ := params["new_tasks"].([]interface{})
-			if len(rawNewTasks) == 0 {
-				logs = append(logs, "Error: split_task requires new_tasks")
-				continue
-			}
-
-			var newlyCreated []gitdiff.TaskChange
-			for _, rt := range rawNewTasks {
-				m, _ := rt.(map[string]interface{})
-				nt := gitdiff.TaskChange{
-					TaskIntent:   castString(m["intent"]),
-					Scope:        castString(m["scope"]),
-					TaskType:     castString(m["type"]),
-					TechnicalWhy: castString(m["technical_why"]),
-					Commits:      castStringSlice(m["commits"]),
-				}
-				if h, ok := castInt(m["estimated_hours"]); ok {
-					nt.EstimatedHours = float64(h)
-				}
-				newlyCreated = append(newlyCreated, nt)
-			}
-
-			// Rebuild list
-			var newTasks []gitdiff.TaskChange
-			for i, t := range tasks {
-				if i == idx {
-					newTasks = append(newTasks, newlyCreated...)
-				} else {
-					newTasks = append(newTasks, t)
-				}
-			}
-			tasks = newTasks
-			logs = append(logs, fmt.Sprintf("Success: split task %d into %d new tasks", idx, len(newlyCreated)))
-			status = fmt.Sprintf("Split task #%d into %d", idx, len(newlyCreated))
-
-		case "remove_task":
-			idx, ok := castInt(params["index"])
-			if !ok || idx < 0 || idx >= len(tasks) {
-				logs = append(logs, fmt.Sprintf("Error: index %v out of bounds", params["index"]))
-				continue
-			}
-			tasks = append(tasks[:idx], tasks[idx+1:]...)
-			logs = append(logs, fmt.Sprintf("Success: removed task %d", idx))
-			status = fmt.Sprintf("Removed task #%d", idx)
-		}
-	}
-	return tasks, strings.Join(logs, "\n"), status
-}
-
-func getCodebaseContext(query string, path string, maxResults int) (string, error) {
-	if path == "" {
-		path = "."
-	}
-	if !strings.HasPrefix(path, ".") && !strings.HasPrefix(path, "/") {
-		path = "./" + path
-	}
-	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("invalid path %q: %v", path, err)
-	}
-	args := []string{"--no-heading", "--line-number", "--max-count", strconv.Itoa(maxResults), query, path}
-	cmd := exec.Command("rg", args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		// Treat "no matches" as empty output without error.
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if exitErr.ExitCode() == 1 {
-				return "", nil
-			}
-			return "", fmt.Errorf("rg error (exit %d): %s", exitErr.ExitCode(), strings.TrimSpace(out.String()))
-		}
-		return "", err
-	}
-	return strings.TrimSpace(out.String()), nil
-}
-
-func toolErrorSummary(log string) string {
-	if log == "" {
-		return ""
-	}
-	var errs []string
-	for _, line := range strings.Split(log, "\n") {
-		if strings.Contains(line, "Error:") || strings.Contains(line, "CRITICAL:") {
-			errs = append(errs, line)
-		}
-	}
-	if len(errs) == 0 {
-		return ""
-	}
-	return strings.Join(errs, "\n")
-}
-
-func emitToolUpdates(options LLMOptions, log string, status string) {
-	if options.OnToolLog != nil && log != "" {
-		for _, line := range strings.Split(log, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			options.OnToolLog(line)
-		}
-	}
-	if options.OnToolStatus != nil && strings.TrimSpace(status) != "" {
-		options.OnToolStatus(status)
-	}
-}
-
-func emitLLMLog(options LLMOptions, label string, content string) {
-	if options.OnLLMLog == nil {
-		return
-	}
-	msg := fmt.Sprintf("%s:\n%s", label, truncateLog(content, 4000))
-	for _, line := range strings.Split(msg, "\n") {
-		options.OnLLMLog(line)
-	}
-}
-
-func formatMessages(messages []OpenAIMessage) string {
-	var sb strings.Builder
-	for i, m := range messages {
-		sb.WriteString(fmt.Sprintf("[%d] %s:\n", i, strings.ToUpper(m.Role)))
-		sb.WriteString(m.Content)
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
-func truncateLog(s string, max int) string {
-	if max <= 0 || len(s) <= max {
-		return s
-	}
-	return s[:max] + "\n…(truncated)"
-}
-
-func sortedCommitList(allowedCommits map[string]struct{}) []string {
-	if len(allowedCommits) == 0 {
-		return nil
-	}
-	var out []string
-	for hash := range allowedCommits {
-		out = append(out, hash)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// Helpers for casting (aliased from gitdiff to avoid circular dependency if needed,
-// but here we can just use those that are already in gitdiff if they are exported.
-// Wait, they are not exported. I'll re-implement them or move them.
-// For now, I'll implement simple versions here to avoid breaking things.
-
-func castString(v interface{}) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case []interface{}:
-		var parts []string
-		for _, part := range val {
-			parts = append(parts, fmt.Sprint(part))
-		}
-		return strings.Join(parts, "\n")
-	case nil:
-		return ""
-	default:
-		return fmt.Sprint(v)
-	}
-}
-
-func castInt(v interface{}) (int, bool) {
-	switch val := v.(type) {
-	case float64:
-		return int(val), true
-	case int:
-		return val, true
-	case string:
-		if i, err := strconv.Atoi(val); err == nil {
-			return i, true
-		}
-	case nil:
-		return 0, false
-	}
-	return 0, false
-}
-
-func castIntSlice(v interface{}) []int {
-	var out []int
-	switch val := v.(type) {
-	case []interface{}:
-		for _, item := range val {
-			if i, ok := castInt(item); ok {
-				out = append(out, i)
-			}
-		}
-	case float64:
-		out = append(out, int(val))
-	case int:
-		out = append(out, val)
-	case string:
-		if i, err := strconv.Atoi(val); err == nil {
-			out = append(out, i)
-		}
-	}
-	return out
-}
-
-func castStringSlice(v interface{}) []string {
-	var out []string
-	switch val := v.(type) {
-	case []interface{}:
-		for _, item := range val {
-			out = append(out, castString(item))
-		}
-	case string:
-		if val != "" {
-			out = append(out, val)
-		}
-	}
-	return out
-}
-
-func GroupTasks(tasks []gitdiff.TaskChange, options LLMOptions) ([]gitdiff.GroupedTask, error) {
-	system := readPromptFile("task_grouper.txt")
-	if system == "" {
-		return nil, errors.New("prompt file task_grouper.txt not found")
-	}
-
-	tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
-	prompt := fmt.Sprintf("Tasks: %s", string(tasksJSON))
-
-	var out []gitdiff.GroupedTask
-	messages := []OpenAIMessage{{Role: "user", Content: prompt}}
-	err := callJSON(messages, system, options, &out)
-	return out, err
-}
-
-func convertToLLMCMessages(messages []OpenAIMessage, system string) []llms.MessageContent {
-	var result []llms.MessageContent
-	if system != "" {
-		result = append(result, llms.TextParts(llms.ChatMessageTypeSystem, system))
-	}
-	for _, msg := range messages {
-		if strings.TrimSpace(msg.Content) == "" {
-			continue
-		}
-		role := strings.ToLower(msg.Role)
-		switch role {
-		case "system":
-			result = append(result, llms.TextParts(llms.ChatMessageTypeSystem, msg.Content))
-		case "user":
-			result = append(result, llms.TextParts(llms.ChatMessageTypeHuman, msg.Content))
-		case "assistant", "ai":
-			result = append(result, llms.TextParts(llms.ChatMessageTypeAI, msg.Content))
-		default:
-			result = append(result, llms.TextParts(llms.ChatMessageTypeHuman, msg.Content))
-		}
-	}
-	return result
-}
-
-func callJSON(messages []OpenAIMessage, system string, options LLMOptions, target interface{}, tools ...llms.Tool) error {
-	llmsMessages := convertToLLMCMessages(messages, system)
-	payload := formatMessages(messages)
-	if system != "" {
-		payload = "SYSTEM: " + system + "\n" + payload
-	}
-	emitLLMLog(options, "LLM INPUT", payload)
-
-	reqStart := time.Now()
-	emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request queued (provider=%s model=%s)", options.Provider, options.ModelName))
-
-	timeout := options.Timeout
-	if timeout == 0 {
-		timeout = 2 * time.Minute
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	adapter, err := createLLM(ctx, options)
-	if err != nil {
-		return err
-	}
-
-	var streamBuf strings.Builder
-	callOpts := []llms.CallOption{
-		llms.WithRepetitionPenalty(options.RepeatPenalty),
-		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
-			streamBuf.Write(chunk)
-			if options.OnStreamChunk != nil {
-				options.OnStreamChunk(string(chunk))
-			}
-			return nil
-		}),
-	}
-
-	provider := strings.ToLower(options.Provider)
-	if provider == "anthropic" {
-		// Anthropic does not allow both. Prioritize temperature if set.
-		if options.Temperature > 0 {
-			callOpts = append(callOpts, llms.WithTemperature(options.Temperature))
-		} else if options.TopP > 0 && options.TopP < 1.0 {
-			callOpts = append(callOpts, llms.WithTopP(options.TopP))
-		}
-	} else {
-		callOpts = append(callOpts, llms.WithTemperature(options.Temperature))
-		callOpts = append(callOpts, llms.WithTopP(options.TopP))
-	}
-
-	if len(tools) > 0 {
-		callOpts = append(callOpts, llms.WithTools(tools))
-
-		// For Anthropic, force tool usage to prevent explanatory text
-		if provider == "anthropic" {
-			callOpts = append(callOpts, llms.WithToolChoice("auto"))
-		}
-	}
-
-	if strings.ToLower(options.Provider) == "ollama" {
-		// Ollama in langchaingo supports JSON mode via options if the model supports it
-		// but specifically here the original code used "format": "json"
-		// langchaingo's ollama implementation might handle this differently.
-	}
-
-	resp, err := adapter.GenerateContent(ctx, llmsMessages, callOpts...)
-	if err != nil {
-		emitLLMLog(options, "LLM STATUS", fmt.Sprintf("request error after %s: %v", time.Since(reqStart).Truncate(time.Millisecond), err))
-		return err
-	}
-
-	if len(resp.Choices) == 0 {
-		return errors.New("empty LLM response")
-	}
-
-	responseText := resp.Choices[0].Content
-	if responseText == "" && streamBuf.Len() > 0 {
-		responseText = streamBuf.String()
-	}
-	toolCalls := resp.Choices[0].ToolCalls
-
-	fmt.Printf("[callJSON] Response - Text length: %d, Tool calls: %d\n", len(responseText), len(toolCalls))
-
-	emitLLMLog(options, "LLM OUTPUT", responseText)
-	if len(toolCalls) > 0 {
-		emitLLMLog(options, "LLM TOOL CALLS", fmt.Sprintf("%d calls", len(toolCalls)))
-		for i, tc := range toolCalls {
-			fmt.Printf("[callJSON] Tool call %d: %s with args: %s\n", i, tc.FunctionCall.Name, tc.FunctionCall.Arguments)
-		}
-	} else {
-		fmt.Printf("[callJSON] WARNING: No tool calls returned despite %d tools provided\n", len(tools))
-	}
-
-	// Handle native tool calls if they exist and target can accept them
-	if len(toolCalls) > 0 {
-		// Try to find if target has a field named Tools of type []ToolCall
-		// This is a bit hacky but it avoids changing all call sites immediately
-		// if we only use it for ChatOutput.
-		// For now, let's just check if it's a pointer to ChatOutput (defined in chat.go)
-		// Wait, ChatOutput is private to chat.go.
-		// Let's use reflection or just assume the target can be unmarshaled into.
-
-		var nativeTools []ToolCall
-		for _, tc := range toolCalls {
-			var params map[string]interface{}
-			_ = json.Unmarshal([]byte(tc.FunctionCall.Arguments), &params)
-			nativeTools = append(nativeTools, ToolCall{
-				Tool:       tc.FunctionCall.Name,
-				Parameters: params,
-			})
-		}
-
-		// If the LLM returned a text response AND tool calls, we want both.
-		// Check if target is a pointer to []ToolCall
-		if ptc, ok := target.(*[]ToolCall); ok {
-			*ptc = nativeTools
-			return nil
-		}
-
-		// Fallback to wrapped object for ChatOutput (or others)
-		type tempOutput struct {
-			Text  string     `json:"text"`
-			Tools []ToolCall `json:"tools"`
-		}
-		tmp := tempOutput{
-			Text:  responseText,
-			Tools: nativeTools,
-		}
-		raw, _ := json.Marshal(tmp)
-		return json.Unmarshal(raw, target)
-	}
-
-	// If we have tools defined but no tool calls were made, the LLM might have just returned text.
-	// In this case, if the target expects a wrapped response with text field, handle it.
-	if len(tools) > 0 {
-		// The LLM returned only text (no tool calls). This is valid - it might be explaining something.
-		// Try to unmarshal into a struct with a "text" field
-		type tempOutput struct {
-			Text  string     `json:"text"`
-			Tools []ToolCall `json:"tools"`
-		}
-		tmp := tempOutput{
-			Text:  responseText,
-			Tools: []ToolCall{},
-		}
-		raw, _ := json.Marshal(tmp)
-		if err := json.Unmarshal(raw, target); err == nil {
-			return nil
-		}
-		// If that didn't work, fall through to legacy JSON parsing
-	}
-
-	// Falls through if native tool calls were not found, but we might have text-based calls
-	if ptc, ok := target.(*[]ToolCall); ok && len(responseText) > 0 {
-		manualTools := parseToolCallsFromText(responseText)
-		if len(manualTools) > 0 {
-			*ptc = manualTools
-			return nil
-		}
-	}
-
-	clean := strings.TrimSpace(responseText)
-	clean = stripCodeFences(clean)
-	clean = extractJSONPayload(clean)
-	raw := []byte(strings.TrimSpace(clean))
-
-	// Robust unmarshal: if target is a slice but response is an empty object {},
-	// treat it as an empty array.
-	if clean == "{}" || clean == "{ }" {
-		// Check if target is a pointer to a slice
-		if strings.HasPrefix(fmt.Sprintf("%T", target), "*[]") {
-			return nil
-		}
-	}
-
-	err = json.Unmarshal(raw, target)
-	if err != nil {
-		// Try to see if it's an object containing an array (wrapper key case)
-		if strings.HasPrefix(fmt.Sprintf("%T", target), "*[]") {
-			var m map[string]interface{}
-			if err2 := json.Unmarshal(raw, &m); err2 == nil {
-				for _, v := range m {
-					if b, err3 := json.Marshal(v); err3 == nil {
-						if err4 := json.Unmarshal(b, target); err4 == nil {
-							// If we got some items, return success
-							return nil
-						}
-					}
-				}
-			}
-		}
-
-		// Try to see if it's a single object that should have been an array
-		if strings.HasPrefix(string(raw), "{") {
-			wrapped := append([]byte("["), raw...)
-			wrapped = append(wrapped, ']')
-			if err2 := json.Unmarshal(wrapped, target); err2 == nil {
-				return nil
-			}
-		}
-		return fmt.Errorf("unmarshal error: %v (response: %s)", err, responseText)
-	}
-
-	return nil
-}
-
-func stripCodeFences(input string) string {
-	if strings.HasPrefix(input, "```") {
-		parts := strings.SplitN(input, "\n", 2)
-		if len(parts) == 2 {
-			input = parts[1]
-		}
-		if idx := strings.LastIndex(input, "```"); idx >= 0 {
-			input = input[:idx]
-		}
-	}
-	return strings.TrimSpace(input)
-}
-
-func extractJSONPayload(input string) string {
-	if input == "" {
-		return input
-	}
-
-	for i := 0; i < len(input); i++ {
-		if input[i] == '{' || input[i] == '[' {
-			open := rune(input[i])
-			close := '}'
-			if open == '[' {
-				close = ']'
-			}
-
-			end := findMatchingEnd(input, i, open, close)
-			if end > i {
-				candidate := input[i : end+1]
-				if json.Valid([]byte(candidate)) {
-					return candidate
-				}
-			}
-		}
-	}
-
-	return input
-}
-
-func findMatchingEnd(input string, start int, open, close rune) int {
-	depth := 0
-	for i, r := range input[start:] {
-		switch r {
-		case open:
-			depth++
-		case close:
-			depth--
-			if depth == 0 {
-				return start + i
-			}
-		}
-	}
-	return -1
+	return merged, nil
 }

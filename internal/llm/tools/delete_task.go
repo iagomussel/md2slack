@@ -12,7 +12,7 @@ import (
 type DeleteTaskTool struct {
 	RepoName string
 	Date     string
-	Tasks    []gitdiff.TaskChange
+	Tasks    *[]gitdiff.TaskChange
 }
 
 func (t *DeleteTaskTool) Name() string {
@@ -28,38 +28,44 @@ Parameters (JSON):
 }
 
 func (t *DeleteTaskTool) Call(ctx context.Context, input string) (string, error) {
+	fmt.Println("delete_task called with input:", input)
 	var params struct {
 		Indices []int    `json:"indices,omitempty"`
 		TaskIDs []string `json:"task_ids,omitempty"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		return "", fmt.Errorf("invalid parameters: %w", err)
+		fmt.Println("ERROR:invalid parameters", err)
+		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
 	if err != nil {
-		return "", err
+		fmt.Println("ERROR:failed to load tasks", err)
+		return "ERROR:failed to load tasks", err
 	}
 
 	taskIDs := append([]string{}, params.TaskIDs...)
 	if len(taskIDs) == 0 && len(params.Indices) > 0 {
 		for _, idx := range params.Indices {
 			if idx < 0 || idx >= len(tasks) {
-				return "", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
+				fmt.Println("ERROR:index out of bounds", idx)
+				return "ERROR:index out of bounds", fmt.Errorf("index %d out of bounds (0-%d)", idx, len(tasks)-1)
 			}
 			taskIDs = append(taskIDs, tasks[idx].ID)
 		}
 	}
 	if len(taskIDs) == 0 {
-		return "", fmt.Errorf("no task_ids or indices provided")
+		fmt.Println("ERROR:no task_ids or indices provided")
+		return "ERROR:no task_ids or indices provided", fmt.Errorf("no task_ids or indices provided")
 	}
 
 	updated, err := storage.DeleteTasks(t.RepoName, t.Date, taskIDs)
 	if err != nil {
-		return "", err
+		fmt.Println("ERROR:failed to delete tasks", err)
+		return "ERROR:failed to delete tasks", err
 	}
-	t.Tasks = updated
+	*t.Tasks = updated
 
 	result := map[string]interface{}{
 		"status":   "deleted",
@@ -72,5 +78,5 @@ func (t *DeleteTaskTool) Call(ctx context.Context, input string) (string, error)
 }
 
 func (t *DeleteTaskTool) GetUpdatedTasks() []gitdiff.TaskChange {
-	return t.Tasks
+	return *t.Tasks
 }

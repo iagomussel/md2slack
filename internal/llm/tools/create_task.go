@@ -12,7 +12,7 @@ import (
 type CreateTaskTool struct {
 	RepoName string
 	Date     string
-	Tasks    []gitdiff.TaskChange
+	Tasks    *[]gitdiff.TaskChange
 }
 
 func (t *CreateTaskTool) Name() string {
@@ -24,7 +24,7 @@ func (t *CreateTaskTool) Description() string {
 Parameters (JSON):
 {
   "title": "string - task title",
-  "description": "string - detailed description", 
+  "details": "string - detailed details", 
   "time_estimate": "string - e.g. '2h', '30m'",
   "scope": "string - scope of the task",		
   "type": "string - type of the task",
@@ -35,9 +35,10 @@ Parameters (JSON):
 }
 
 func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error) {
+	fmt.Println("create_task called with input:", input)
 	var params struct {
 		Title          string   `json:"title"`
-		Description    string   `json:"description"`
+		Details        string   `json:"details"`
 		TimeEstimate   string   `json:"time_estimate"`
 		Commits        []string `json:"commits"`
 		Scope          string   `json:"scope"`
@@ -48,14 +49,15 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		return "ERROR:invalid parameters: %w fix it and try again", fmt.Errorf("invalid parameters: %w", err)
+		fmt.Println("ERROR:invalid parameters", err)
+		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	newTask := gitdiff.TaskChange{
 		RepoName:       t.RepoName,
 		Date:           t.Date,
 		Title:          params.Title,
-		Description:    params.Description,
+		Details:        params.Details,
 		TimeEstimate:   params.TimeEstimate,
 		TaskIntent:     params.Intent,
 		Commits:        params.Commits,
@@ -71,9 +73,10 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 
 	id, updated, err := storage.CreateTask(t.RepoName, t.Date, newTask)
 	if err != nil {
-		return "", err
+		fmt.Println("ERROR:failed to create task", err)
+		return "ERROR:failed to create task", err
 	}
-	t.Tasks = updated
+	*t.Tasks = updated
 
 	result := map[string]interface{}{
 		"status":  "created",
@@ -87,5 +90,5 @@ func (t *CreateTaskTool) Call(ctx context.Context, input string) (string, error)
 
 // GetUpdatedTasks returns the current task list after modifications
 func (t *CreateTaskTool) GetUpdatedTasks() []gitdiff.TaskChange {
-	return t.Tasks
+	return *t.Tasks
 }

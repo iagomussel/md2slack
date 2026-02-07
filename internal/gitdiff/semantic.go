@@ -111,13 +111,12 @@ type TaskChange struct {
 	Commits        []string `json:"commits"`
 	Confidence     float64  `json:"confidence"`
 	EstimatedHours float64  `json:"estimated_hours"` // User used int in example, but standardizing on float/int logic. Let's use float64 for generic or int. User showed 2.
-	TechnicalWhy   string   `json:"technical_why"`
+	Details        string   `json:"details"`
 	Status         string   `json:"status"`
 
 	// Deprecated / Internal / Compatibility fields
 	TaskID       int    `json:"task_id,omitempty"` // Keep for now if needed internally, but mapped to ID
 	Title        string `json:"title,omitempty"`
-	Description  string `json:"description,omitempty"`
 	TimeEstimate string `json:"time_estimate,omitempty"`
 	IsHistorical bool   `json:"is_historical,omitempty"`
 	IsManual     bool   `json:"is_manual,omitempty"`
@@ -138,13 +137,12 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 		Commits        interface{} `json:"commits"`
 		Confidence     *float64    `json:"confidence"`
 		EstimatedHours interface{} `json:"estimated_hours"`
-		TechnicalWhy   interface{} `json:"technical_why"`
+		Details        interface{} `json:"details"`
 		Status         interface{} `json:"status"`
 
 		// Legacy
 		TaskID       interface{} `json:"task_id"`
 		Title        interface{} `json:"title"`
-		Description  interface{} `json:"description"`
 		TimeEstimate interface{} `json:"time_estimate"`
 	}
 
@@ -171,9 +169,9 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 		t.EstimatedHours = val
 	}
 
-	switch v := raw.TechnicalWhy.(type) {
+	switch v := raw.Details.(type) {
 	case string:
-		t.TechnicalWhy = strings.TrimSpace(v)
+		t.Details = strings.TrimSpace(v)
 	case []interface{}:
 		var lines []string
 		for _, item := range v {
@@ -181,7 +179,7 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 				lines = append(lines, s)
 			}
 		}
-		t.TechnicalWhy = strings.Join(lines, "\n")
+		t.Details = strings.Join(lines, "\n")
 	}
 	t.Status = strings.ToLower(strings.TrimSpace(castString(raw.Status)))
 
@@ -196,7 +194,6 @@ func (t *TaskChange) UnmarshalJSON(data []byte) error {
 	}
 
 	t.Title = castString(raw.Title)
-	t.Description = castString(raw.Description)
 	t.TimeEstimate = castString(raw.TimeEstimate)
 
 	return nil

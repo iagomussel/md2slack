@@ -77,17 +77,17 @@ func renderTask(t gitdiff.TaskChange) string {
 		statusIcon = "✅"
 	}
 
-	var details []string
-	for _, line := range strings.Split(t.TechnicalWhy, "\n") {
+	var Details []string
+	for _, line := range strings.Split(t.Details, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		details = append(details, fmt.Sprintf("  - %s", line))
+		Details = append(Details, fmt.Sprintf("  - %s", line))
 	}
-	var detailsStr string
-	if len(details) > 0 {
-		detailsStr = strings.Join(details, "\n") + "\n"
+	var Detailstr string
+	if len(Details) > 0 {
+		Detailstr = strings.Join(Details, "\n") + "\n"
 	}
 
 	commitsLine := ""
@@ -100,7 +100,7 @@ func renderTask(t gitdiff.TaskChange) string {
 		hours,
 		statusLabel,
 		statusIcon,
-		detailsStr,
+		Detailstr,
 		commitsLine,
 	)
 }

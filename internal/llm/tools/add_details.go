@@ -11,7 +11,7 @@ import (
 type AddDetailsTool struct {
 	RepoName string
 	Date     string
-	Tasks    []gitdiff.TaskChange
+	Tasks    *[]gitdiff.TaskChange
 }
 
 func (t *AddDetailsTool) Name() string {
@@ -23,41 +23,45 @@ func (t *AddDetailsTool) Description() string {
 }
 
 func (t *AddDetailsTool) Call(ctx context.Context, input string) (string, error) {
+	fmt.Println("add_details called with input:", input)
 	var params struct {
-		Index       int    `json:"index"`
-		Description string `json:"description"`
+		Index   int    `json:"index"`
+		Details string `json:"details"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		fmt.Println("ERROR:invalid parameters", err)
 		return "ERROR:invalid parameters", fmt.Errorf("invalid parameters: %w", err)
 	}
 
 	tasks, err := storage.LoadTasks(t.RepoName, t.Date)
 	if err != nil {
-		return "", err
+		fmt.Println("ERROR:failed to load tasks", err)
+		return "ERROR:failed to load tasks", err
 	}
 
 	if params.Index < 0 || params.Index >= len(tasks) {
+		fmt.Println("ERROR:index out of bounds", params.Index)
 		return "ERROR:index out of bounds", fmt.Errorf("index %d out of bounds", params.Index)
 	}
 
 	task := &tasks[params.Index]
-	// Append if it exists or overwrite? Assuming overwrite or append. Let's overwrite TechnicalWhy as it seems to be the field for generic technical details.
-	if task.TechnicalWhy != "" {
-		task.TechnicalWhy += "\n" + params.Description
+	if task.Details != "" {
+		task.Details += "\n" + params.Details
 	} else {
-		task.TechnicalWhy = params.Description
+		task.Details = params.Details
 	}
 
 	updated, err := storage.UpdateTask(t.RepoName, t.Date, task.ID, *task)
 	if err != nil {
-		return "", err
+		fmt.Println("ERROR:failed to update task", err)
+		return "ERROR:failed to update task", err
 	}
-	t.Tasks = updated
+	*t.Tasks = updated
 
-	return "details added", nil
+	return "Details added", nil
 }
 
 func (t *AddDetailsTool) GetUpdatedTasks() []gitdiff.TaskChange {
-	return t.Tasks
+	return *t.Tasks
 }

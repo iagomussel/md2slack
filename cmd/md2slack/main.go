@@ -4,26 +4,16 @@ import (
 	"flag"
 	"fmt"
 	"md2slack/internal/config"
-	"md2slack/internal/gitdiff"
 	"md2slack/internal/llm"
-	"md2slack/internal/slack"
-	"md2slack/internal/storage"
-	"md2slack/internal/webui"
-	"net"
 	"os"
-	"regexp"
-	"strconv"
-	"strings"
 	"time"
 )
 
 func main() {
-	var debug bool
 	var install bool
-	var webAddr string
-	flag.BoolVar(&debug, "debug", false, "Enable debug mode")
+	var debug bool
 	flag.BoolVar(&install, "install", false, "Install the binary")
-	flag.StringVar(&webAddr, "web-addr", "127.0.0.1:8080", "Web UI address")
+	flag.BoolVar(&debug, "debug", false, "Enable debug mode")
 	flag.Parse()
 
 	if install {
@@ -31,48 +21,14 @@ func main() {
 		return
 	}
 
-	args := flag.Args()
-	// Web UI is always enabled, dates are optional
-
-	var dates []string
-	extra := ""
-	if len(args) > 0 {
-		dates = []string{args[0]}
-		if strings.Contains(args[0], ",") {
-			dates = strings.Split(args[0], ",")
-		}
-		if len(args) > 1 {
-			extra = strings.Join(args[1:], " ")
-			// Clean terminal artifacts like bracketed paste markers
-			re := regexp.MustCompile(`(?i)\x1b\[\d+~`)
-			extra = re.ReplaceAllString(extra, "")
-		}
-	}
-
+	// 1. Load Configuration
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
-	flagWebAddr := flag.Lookup("web-addr")
-	webAddrDefault := "127.0.0.1:8080"
-	if flagWebAddr != nil {
-		if flagWebAddr.DefValue != "" {
-			webAddrDefault = flagWebAddr.DefValue
-		}
-	}
-
-	if webAddr == webAddrDefault {
-		webAddr = net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
-		resolved, err := resolveWebAddr(cfg.Server.Host, cfg.Server.Port, cfg.Server.AutoIncrementPort)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error resolving web address: %v\n", err)
-			os.Exit(1)
-		}
-		webAddr = resolved
-	}
-
+	// 2. Define Stages for UI
 	stageNames := []string{
 		"Preparing commit context",
 		"Summarizing commits",
@@ -82,9 +38,10 @@ func main() {
 		"Rendering report",
 	}
 
-	// Always start web server
-	webServer := webui.Start(webAddr, stageNames)
+	// 3. Initialize Web Server (CLI wrapper)
+	webServer := startWebServer(cfg, stageNames)
 
+	// 4. Initialize Core Processor
 	processor := &ReportProcessor{
 		Config: cfg,
 		LLMOpts: llm.LLMOptions{
@@ -99,94 +56,13 @@ func main() {
 			Timeout:       2 * time.Minute,
 		},
 		WebServer:  webServer,
-		Debug:      debug,
 		StageNames: stageNames,
+		Debug:      debug,
 	}
 
-	// Initialize handlers immediately so saving works even if we just load history
-	webServer.SetHandlers(
-		func(report string) error {
-			return slack.SendMarkdown(&cfg.Slack, report)
-		},
-		func(prompt string, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
-			return llm.RefineTasksWithPrompt(tasks, prompt, processor.LLMOpts)
-		},
-		func(repo string, date string, tasks []gitdiff.TaskChange, report string) error {
-			if repo == "" {
-				repo = "unknown"
-			}
-			if err := storage.ReplaceTasks(repo, date, tasks); err != nil {
-				return err
-			}
-			return storage.SaveHistory(repo, date, report, "assistant")
-		},
-	)
+	// 5. Wire things together (Server handles UI, Processor handles Analysis)
+	SetupServerHandlers(webServer, processor)
 
-	if len(dates) == 0 {
-		// Register load/clear handlers immediately so they're available before any analysis runs
-		webServer.SetLoadClearHandlers(
-			func(repo string, date string) ([]gitdiff.TaskChange, string, error) {
-				repoName := gitdiff.GetRepoNameAt(repo)
-				hist, err := storage.LoadHistory(repoName, date)
-				if err != nil {
-					return nil, "", err
-				}
-				if hist == nil {
-					return nil, "", nil
-				}
-				tasks, err := storage.LoadTasks(repoName, date)
-				if err != nil {
-					// Fallback to empty if load fails? Or just return error?
-					tasks = nil
-				}
-				return tasks, hist.Message, nil
-			},
-			func(repo string, date string) error {
-				repoName := gitdiff.GetRepoNameAt(repo)
-				return storage.DeleteHistoryDB(repoName, date)
-			},
-		)
-
-		// Register action handlers immediately so they're available before any analysis runs
-		webServer.SetActionHandler(
-			func(action string, selected []int, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
-				return llm.EditTasksWithAction(tasks, action, selected, processor.LLMOpts)
-			},
-			func(index int, task gitdiff.TaskChange, tasks []gitdiff.TaskChange) ([]gitdiff.TaskChange, error) {
-				if index < 0 || index >= len(tasks) {
-					return tasks, fmt.Errorf("index out of bounds")
-				}
-				tasks[index] = task
-				return tasks, nil
-			},
-		)
-
-		// Register chat handler with callbacks for streaming tool events
-		webServer.SetChatWithCallbacks(
-			func(history []webui.OpenAIMessage, tasks []gitdiff.TaskChange, callbacks webui.ChatCallbacks) ([]gitdiff.TaskChange, string, error) {
-				var llmHistory []llm.OpenAIMessage
-				for _, msg := range history {
-					llmHistory = append(llmHistory, llm.OpenAIMessage{Role: msg.Role, Content: msg.Content})
-				}
-				// Create LLM options with callbacks
-				opts := processor.LLMOpts
-				opts.OnToolStart = callbacks.OnToolStart
-				opts.OnToolEnd = callbacks.OnToolEnd
-				opts.OnStreamChunk = callbacks.OnStreamChunk
-				// opts.RepoName and Date are not strictly needed for in-memory tools
-
-				updated, text, err := llm.StreamChatWithRequests(llmHistory, tasks, opts, nil)
-				return updated, text, err
-			},
-		)
-
-		for req := range webServer.RunChannel() {
-			processor.ProcessDate(req.Date, req.RepoPath, req.Author, "")
-		}
-		return
-	}
-
-	for _, date := range dates {
-		processor.ProcessDate(date, "", "", extra)
-	}
+	// 6. Start the Main Processing Loop
+	processor.Run()
 }

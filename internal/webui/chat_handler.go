@@ -82,6 +82,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				"result": json.RawMessage(resultJSON),
 			})
 		},
+		OnTasksUpdate: func(tasks []gitdiff.TaskChange) {
+			s.SetTasks(tasks, s.state.NextActions)
+			sendEvent("message", map[string]interface{}{
+				"tasks": tasks,
+			})
+		},
 	}
 
 	log.Printf("[handleChat] Calling chat handler with %d current tasks", len(currentTasks))

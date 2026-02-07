@@ -300,6 +300,7 @@
                 <input
                     bind:value={input}
                     disabled={loading}
+                    aria-rowcount="3"
                     placeholder="Ask me anything..."
                     class="flex-1 bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 outline-none focus:border-orange-500/50 disabled:opacity-50"
                 />

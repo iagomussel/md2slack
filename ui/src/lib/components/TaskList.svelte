@@ -19,7 +19,7 @@
 	const ACTIONS = [
 		{
 			id: "make_longer",
-			label: "More Detail",
+			label: "More Details",
 			icon: "M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4",
 		},
 		{
@@ -135,11 +135,11 @@
 				</div>
 			</div>
 
-			{#if task.technical_why}
+			{#if task.details}	
 				<p
 					class="text-[12px] text-gray-400 line-clamp-3 leading-relaxed mb-4 font-medium opacity-80"
 				>
-					{task.technical_why}
+					{task.details}
 				</p>
 			{/if}
 

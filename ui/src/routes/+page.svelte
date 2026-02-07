@@ -368,7 +368,7 @@
 						id="target-date"
 						type="date"
 						bind:value={date}
-						class="bg-transparent border-none text-sm font-semibold text-white outline-none focus:text-orange-400 transition-colors"
+						class="bg-transparent border-none text-sm font-semibold text-blue outline-none focus:text-orange-400 transition-colors"
 					/>
 				</div>
 				<div class="h-8 w-px bg-white/10"></div>
@@ -522,6 +522,7 @@
 				</div>
 
 				<!-- Right Column: Preview -->
+
 				<section
 					class="bg-[#0d1117] border border-white/10 rounded-2xl overflow-hidden shadow-xl flex flex-col"
 				>
@@ -585,7 +586,9 @@
 		scrollbar-width: thin;
 		scrollbar-color: #30363d transparent;
 	}
-
+	input[type="date"]::-webkit-calendar-picker-indicator {
+		filter: invert(1); /* Torna o ícone branco em fundo escuro */
+	}
 	@keyframes lightning-flow {
 		0% {
 			transform: translateX(-100%);

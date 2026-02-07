@@ -7,6 +7,7 @@ import (
 	"log"
 	"md2slack/internal/llm/tools"
 	"strings"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -48,6 +49,7 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 	}
 	provider := strings.ToLower(a.Options.Provider)
 	if provider == "anthropic" {
+		callOpts = append(callOpts, llms.WithToolChoice("auto"))
 		if a.Options.Temperature > 0 {
 			callOpts = append(callOpts, llms.WithTemperature(a.Options.Temperature))
 		} else if a.Options.TopP > 0 && a.Options.TopP < 1.0 {
@@ -82,18 +84,38 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 		if responseText == "" && streamBuf.Len() > 0 {
 			responseText = streamBuf.String()
 		}
-		log.Printf("[llm.StreamChat] turn=%d toolCalls=%d contentLen=%d streamLen=%d",
-			i+1, len(choice.ToolCalls), len(choice.Content), streamBuf.Len())
 
+		// Tool Call identification (Native or Text-parsed)
+		tCalls := choice.ToolCalls
+		if len(tCalls) == 0 && responseText != "" && a.Tools != nil {
+			// Fallback: parse from text if native tools failed but we have text
+			parsed := parseToolCallsFromText(responseText)
+			if len(parsed) > 0 {
+				log.Printf("agent.go:94 [llm.StreamChat] detected %d tool calls in text fallback", len(parsed))
+				// Convert to internal format for execution
+				for _, p := range parsed {
+					tCalls = append(tCalls, llms.ToolCall{
+						FunctionCall: &llms.FunctionCall{
+							Name:      p.Tool,
+							Arguments: func() string { b, _ := json.Marshal(p.Parameters); return string(b) }(),
+						},
+					})
+				}
+			}
+		}
+
+		log.Printf("agent.go:107 [llm.StreamChat] turn=%d toolCalls=%d contentLen=%d streamLen=%d",
+			i+1, len(tCalls), len(choice.Content), streamBuf.Len())
+		log.Printf("agent.go:107 [stream] responseText=%s", streamBuf.String())
 		// If there are tool calls
-		if len(choice.ToolCalls) > 0 {
+		if len(tCalls) > 0 {
 			toolUsed = true
-			// Add assistant message with tool calls to history (no empty text blocks)
+			// Add assistant message with tool calls to history
 			var parts []llms.ContentPart
 			if strings.TrimSpace(responseText) != "" {
 				parts = append(parts, llms.TextContent{Text: responseText})
 			}
-			for _, tc := range choice.ToolCalls {
+			for _, tc := range tCalls {
 				parts = append(parts, llms.ToolCall{
 					ID:   tc.ID,
 					Type: tc.Type,
@@ -108,7 +130,7 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 				Parts: parts,
 			})
 
-			for _, tc := range choice.ToolCalls {
+			for _, tc := range tCalls {
 				// Notify tool start
 				if a.Options.OnToolStart != nil {
 					a.Options.OnToolStart(tc.FunctionCall.Name, tc.FunctionCall.Arguments)
@@ -135,6 +157,11 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 					a.Options.OnToolEnd(tc.FunctionCall.Name, result)
 				}
 
+				// Notify task updates
+				if a.Options.OnTasksUpdate != nil {
+					a.Options.OnTasksUpdate(a.Tools.GetUpdatedTasks())
+				}
+
 				// Add tool response to history (proper tool message)
 				currentMessages = append(currentMessages, llms.MessageContent{
 					Role: llms.ChatMessageTypeTool,
@@ -157,6 +184,75 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 	}
 
 	return "Max turns reached", toolUsed, nil
+}
+
+// CallJSON makes a structured LLM call and unmarshals the result into target.
+func (a *Agent) CallJSON(ctx context.Context, history []OpenAIMessage, systemPrompt string, target interface{}) error {
+	messages := convertToLLMCMessages(history, systemPrompt)
+
+	// Logging
+	payload := formatMessages(history)
+	if systemPrompt != "" {
+		payload = "SYSTEM: " + systemPrompt + "\n" + payload
+	}
+	emitLLMLog(a.Options, "LLM INPUT", payload)
+
+	reqStart := time.Now()
+	emitLLMLog(a.Options, "LLM STATUS", fmt.Sprintf("request queued (provider=%s model=%s)", a.Options.Provider, a.Options.ModelName))
+
+	adapter, err := createLLM(ctx, a.Options)
+	if err != nil {
+		return err
+	}
+
+	callOpts := []llms.CallOption{
+		llms.WithRepetitionPenalty(a.Options.RepeatPenalty),
+	}
+
+	provider := strings.ToLower(a.Options.Provider)
+	if provider == "anthropic" {
+		if a.Options.Temperature > 0 {
+			callOpts = append(callOpts, llms.WithTemperature(a.Options.Temperature))
+		} else if a.Options.TopP > 0 && a.Options.TopP < 1.0 {
+			callOpts = append(callOpts, llms.WithTopP(a.Options.TopP))
+		}
+	} else {
+		callOpts = append(callOpts, llms.WithTemperature(a.Options.Temperature))
+		if a.Options.TopP > 0 && a.Options.TopP < 1.0 {
+			callOpts = append(callOpts, llms.WithTopP(a.Options.TopP))
+		}
+	}
+
+	resp, err := adapter.GenerateContent(ctx, messages, callOpts...)
+	if err != nil {
+		emitLLMLog(a.Options, "LLM STATUS", fmt.Sprintf("request error after %s: %v", time.Since(reqStart).Truncate(time.Millisecond), err))
+		return err
+	}
+
+	if len(resp.Choices) == 0 {
+		return fmt.Errorf("empty LLM response")
+	}
+
+	responseText := resp.Choices[0].Content
+	emitLLMLog(a.Options, "LLM OUTPUT", responseText)
+
+	// Clean JSON
+	clean := stripCodeFences(responseText)
+	clean = extractJSONPayload(clean)
+
+	err = json.Unmarshal([]byte(clean), target)
+	if err != nil {
+		// Try a more aggressive search if it failed
+		if idx := strings.Index(clean, "{"); idx != -1 {
+			clean = clean[idx:]
+		}
+		if idx := strings.LastIndex(clean, "}"); idx != -1 {
+			clean = clean[:idx+1]
+		}
+		err = json.Unmarshal([]byte(clean), target)
+	}
+
+	return err
 }
 
 // ForceToolCalls asks the model to respond only with tool calls.

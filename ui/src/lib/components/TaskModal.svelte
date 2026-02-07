@@ -17,7 +17,7 @@
         type = task?.task_type || "delivery";
         status = task?.status || "done";
         estimated_hours = task?.estimated_hours || 1;
-        details = task?.technical_why || "";
+        details = task?.details || "";
         commits = task?.commits?.join(", ") || "";
     });
 
@@ -29,7 +29,7 @@
             task_type: type,
             status: status,
             estimated_hours: Number(estimated_hours),
-            technical_why: details,
+            details: details,
             commits: commits
                 .split(",")
                 .map((/** @type {string} */ c) => c.trim())

@@ -8,10 +8,13 @@ import (
 
 // TaskTools holds all tools that can modify tasks and provides access to the updated task list
 type TaskTools struct {
-	CreateTask *CreateTaskTool
-	UpdateTask *UpdateTaskTool
-	DeleteTask *DeleteTaskTool
-	// TODO: Add SplitTask, MergeTasks, SearchCodebase, etc.
+	tasks              *[]gitdiff.TaskChange
+	CreateTask         *CreateTaskTool
+	UpdateTask         *UpdateTaskTool
+	DeleteTask         *DeleteTaskTool
+	AddDetails         *AddDetailsTool
+	AddTime            *AddTimeTool
+	AddCommitReference *AddCommitReferenceTool
 }
 
 // NewTaskTools creates a new set of task manipulation tools initialized with repo/date context
@@ -19,10 +22,16 @@ func NewTaskTools(repoName string, date string, currentTasks []gitdiff.TaskChang
 	tasksCopy := make([]gitdiff.TaskChange, len(currentTasks))
 	copy(tasksCopy, currentTasks)
 
+	ptr := &tasksCopy
+
 	return &TaskTools{
-		CreateTask: &CreateTaskTool{RepoName: repoName, Date: date, Tasks: tasksCopy},
-		UpdateTask: &UpdateTaskTool{RepoName: repoName, Date: date, Tasks: tasksCopy},
-		DeleteTask: &DeleteTaskTool{RepoName: repoName, Date: date, Tasks: tasksCopy},
+		tasks:              ptr,
+		CreateTask:         &CreateTaskTool{RepoName: repoName, Date: date, Tasks: ptr},
+		UpdateTask:         &UpdateTaskTool{RepoName: repoName, Date: date, Tasks: ptr},
+		DeleteTask:         &DeleteTaskTool{RepoName: repoName, Date: date, Tasks: ptr},
+		AddDetails:         &AddDetailsTool{Tasks: ptr},
+		AddTime:            &AddTimeTool{Tasks: ptr},
+		AddCommitReference: &AddCommitReferenceTool{Tasks: ptr},
 	}
 }
 
@@ -38,8 +47,7 @@ func (tt *TaskTools) AsList() []tools.Tool {
 // GetUpdatedTasks returns the current state of tasks after all modifications
 // It should be called after agent execution to get the final task list
 func (tt *TaskTools) GetUpdatedTasks() []gitdiff.TaskChange {
-	// All tools share the same task list reference, so we can return from any
-	return tt.CreateTask.GetUpdatedTasks()
+	return *tt.tasks
 }
 
 // Find returns a tool by name
@@ -47,10 +55,16 @@ func (tt *TaskTools) Find(name string) (tools.Tool, bool) {
 	switch name {
 	case "create_task":
 		return tt.CreateTask, true
-	case "update_task":
+	case "update_task", "edit_task":
 		return tt.UpdateTask, true
-	case "delete_task":
+	case "delete_task", "remove_task":
 		return tt.DeleteTask, true
+	case "add_details":
+		return tt.AddDetails, true
+	case "add_time":
+		return tt.AddTime, true
+	case "add_commit_reference":
+		return tt.AddCommitReference, true
 	default:
 		return nil, false
 	}

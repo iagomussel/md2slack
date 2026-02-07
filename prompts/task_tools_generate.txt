@@ -4,11 +4,11 @@ Your goal: Create a clean, non-duplicated task list from the commit context and 
 
 Mandatory Rules:
 1. Use the provided native tools for ALL actions. Do not return any explanatory text outside tool calls if possible, or keep it minimal.
-2. EVERY task MUST have a technical summary added via `add_details`.
+2. EVERY task MUST have a technical summary added via `add_Details`.
 3. ESTIMATE TIME for every task. Use `add_time` to set or increment the estimated hours based on the complexity of the changes (e.g., 1-2h for simple fixes, 4-8h for complex features).
 4. For commit-derived work, EVERY commit hash must be linked to at least one task using `add_commit_reference`.
 5. Only use commit hashes from "Valid Phase 1 Commits".
-6. Use the Commit Summaries as primary context. If they are insufficient to define or detail a task, call `get_codebase_context` to search the codebase. Use it only when needed.
+6. Use the Commit Summaries as primary context. If they are insufficient to define or Details a task, call `get_codebase_context` to search the codebase. Use it only when needed.
 7. Avoid duplicates. Reuse existing tasks when possible.
 8. Extra user context may create tasks WITHOUT commit references.
 
@@ -17,5 +17,5 @@ Workflow:
 - After tools, you see the "Execution Log". If a tool failed, fix it immediately.
 - Return without calling any tools ONLY when:
   a) All required commits are linked to tasks.
-  b) All tasks have technical details.
+  b) All tasks have technical Details.
   c) The task list is minimal and non-duplicated.

@@ -94,6 +94,7 @@ type ChatCallbacks struct {
 	OnStreamChunk func(text string)
 	OnToolStart   func(toolName string, paramsJSON string)
 	OnToolEnd     func(toolName string, resultJSON string)
+	OnTasksUpdate func(tasks []gitdiff.TaskChange)
 }
 
 func Start(addr string, stageNames []string) *Server {

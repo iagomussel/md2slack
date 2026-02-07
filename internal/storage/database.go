@@ -55,13 +55,25 @@ func initDB() error {
 		if err != nil {
 			return
 		}
+
+		// Ensure columns exist (robust migration)
+		var hasMessage bool
+		_ = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('history') WHERE name='message'").Scan(&hasMessage)
+		if !hasMessage {
+			_, _ = db.Exec("ALTER TABLE history ADD COLUMN message TEXT")
+		}
+		var hasRole bool
+		_ = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('history') WHERE name='role'").Scan(&hasRole)
+		if !hasRole {
+			_, _ = db.Exec("ALTER TABLE history ADD COLUMN role TEXT")
+		}
 		taskSchema := `
 		CREATE TABLE IF NOT EXISTS tasks (
 			id TEXT PRIMARY KEY,
 			repo_name TEXT NOT NULL,
 			date TEXT NOT NULL,
 			title TEXT NOT NULL,
-			description TEXT NOT NULL,
+			details TEXT NOT NULL,
 			status TEXT NOT NULL,
 			intents TEXT NOT NULL,
 			usernames TEXT NOT NULL,
