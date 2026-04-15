@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+var ErrNoToolCalls = errors.New("no tool calls in LLM response")
+
 type LLMOptions struct {
 	Provider        string
 	Temperature     float64
@@ -31,6 +33,7 @@ type LLMOptions struct {
 	OnStreamChunk   func(string)
 	OnToolStart     func(toolName string, paramsJSON string)
 	OnToolEnd       func(toolName string, resultJSON string)
+	OnLLMMessage    func(role string, content string)
 	OnTasksUpdate   func(tasks []gitdiff.TaskChange)
 	Timeout         time.Duration
 }
@@ -187,7 +190,13 @@ func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, su
 
 	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
 	agent := NewAgent(options, taskTools)
-	responseText, toolUsed, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	responseText, toolUsed, err := agent.StreamChatWithContext(ctx, []OpenAIMessage{{Role: "user", Content: prompt}}, system)
 	if err != nil {
 		return taskTools.GetUpdatedTasks(), err
 	}
@@ -203,6 +212,10 @@ func ReviewTasks(currentTasks []gitdiff.TaskChange, commits []gitdiff.Commit, su
 }
 
 func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskChange, manualTasks []gitdiff.TaskChange, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
+	return IncorporateCommitWithContext(context.Background(), commit, currentTasks, manualTasks, extraContext, options, allowedCommits)
+}
+
+func IncorporateCommitWithContext(ctx context.Context, commit gitdiff.CommitChange, currentTasks []gitdiff.TaskChange, manualTasks []gitdiff.TaskChange, extraContext string, options LLMOptions, allowedCommits map[string]struct{}) ([]gitdiff.TaskChange, error) {
 	system := readPromptFile("task_tools.txt")
 	if system == "" {
 		return nil, errors.New("prompt file task_tools.txt not found")
@@ -232,8 +245,21 @@ func IncorporateCommit(commit gitdiff.CommitChange, currentTasks []gitdiff.TaskC
 
 	taskTools := tools.NewTaskTools(options.RepoName, options.Date, currentTasks)
 	agent := NewAgent(options, taskTools)
-	_, _, err := agent.StreamChat([]OpenAIMessage{{Role: "user", Content: prompt}}, system)
-	return taskTools.GetUpdatedTasks(), err
+	if options.OnLLMMessage != nil {
+		options.OnLLMMessage("system", system)
+		options.OnLLMMessage("user", prompt)
+	}
+	responseText, toolUsed, err := agent.StreamChatWithContext(ctx, []OpenAIMessage{{Role: "user", Content: prompt}}, system)
+	if err != nil {
+		return taskTools.GetUpdatedTasks(), err
+	}
+	if options.OnLLMMessage != nil && strings.TrimSpace(responseText) != "" {
+		options.OnLLMMessage("assistant", responseText)
+	}
+	if !toolUsed && strings.TrimSpace(responseText) != "" {
+		return taskTools.GetUpdatedTasks(), ErrNoToolCalls
+	}
+	return taskTools.GetUpdatedTasks(), nil
 }
 
 func RefineTasksWithPrompt(tasks []gitdiff.TaskChange, userPrompt string, options LLMOptions) ([]gitdiff.TaskChange, error) {

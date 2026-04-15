@@ -7,12 +7,22 @@
 
 	let selectedProject = $state("");
 	let selectedUser = $state("");
+	let jira_enabled = $state(false);
+	let jira_storage_repo = $state("");
+	let reportSource = $state("git");
+
+	function historyRepoKey() {
+		if (reportSource === "jira" && jira_storage_repo) return jira_storage_repo;
+		return selectedProject;
+	}
 	/** @type {string[]} */
 	let logs = $state([]);
 	/** @type {any[]} */
 	let tasks = $state([]);
 	/** @type {any[]} */
 	let stages = $state([]);
+	/** @type {any[]} */
+	let commitRuns = $state([]);
 	let date = $state("");
 	let report_html = $state("");
 
@@ -55,7 +65,9 @@
 				const state = await res.json();
 				logs = state.logs || [];
 				stages = state.stages || [];
-
+				jira_enabled = !!state.jira_enabled;
+				if (state.jira_storage_repo)
+					jira_storage_repo = state.jira_storage_repo;
 				// Only update tasks/report if the date still matches
 				// to avoid race conditions when switching dates
 				if (state.date === date) {
@@ -65,6 +77,7 @@
 					);
 					tasks = state.tasks || [];
 					report_html = state.report_html || "";
+					commitRuns = state.commit_runs || [];
 				} else {
 					console.log(
 						`[loadState] Date mismatch: state.date=${state.date}, ui.date=${date}, skipping task update`,
@@ -75,6 +88,40 @@
 			}
 		} catch (e) {
 			console.error("Failed to load state", e);
+		}
+	}
+
+	/** @param {string} role */
+	function getRoleClass(role) {
+		switch (role) {
+			case "system":
+				return "bg-blue-500/15 text-blue-300 border-blue-500/30";
+			case "user":
+				return "bg-indigo-500/15 text-indigo-300 border-indigo-500/30";
+			case "assistant":
+				return "bg-green-500/15 text-green-300 border-green-500/30";
+			case "tool_start":
+				return "bg-orange-500/15 text-orange-300 border-orange-500/30";
+			case "tool_end":
+				return "bg-amber-500/15 text-amber-300 border-amber-500/30";
+			case "error":
+				return "bg-red-500/15 text-red-300 border-red-500/30";
+			default:
+				return "bg-white/10 text-gray-300 border-white/20";
+		}
+	}
+
+	/** @param {string} status */
+	function getCommitStatusClass(status) {
+		switch (status) {
+			case "success":
+				return "text-green-400 bg-green-500/10 border-green-500/30";
+			case "error":
+				return "text-red-400 bg-red-500/10 border-red-500/30";
+			case "running":
+				return "text-orange-300 bg-orange-500/10 border-orange-500/30";
+			default:
+				return "text-gray-400 bg-white/5 border-white/10";
 		}
 	}
 
@@ -89,18 +136,19 @@
 	});
 
 	$effect(() => {
-		if (date && selectedProject) {
-			console.log(
-				`[loadHistory] Fetching tasks for date=${date}, repo=${selectedProject}`,
-			);
+		const repo = historyRepoKey();
+		if (date && repo) {
+			console.log(`[loadHistory] Fetching tasks for date=${date}, repo=${repo}`);
 			loadHistory();
 		}
 	});
 
 	async function loadHistory() {
+		const repo = historyRepoKey();
+		if (!repo) return;
 		try {
 			const res = await fetch(
-				`/api/load-history?date=${date}&repo=${encodeURIComponent(selectedProject)}`,
+				`/api/load-history?date=${date}&repo=${encodeURIComponent(repo)}`,
 			);
 			if (res.ok) {
 				const data = await res.json();
@@ -118,12 +166,13 @@
 	}
 
 	async function handleClearTasks() {
-		if (!date || !selectedProject) return;
+		const repo = historyRepoKey();
+		if (!date || !repo) return;
 		if (!confirm("Are you sure you want to clear tasks for this day?"))
 			return;
 		try {
 			const res = await fetch(
-				`/api/clear-tasks?date=${date}&repo=${encodeURIComponent(selectedProject)}`,
+				`/api/clear-tasks?date=${date}&repo=${encodeURIComponent(repo)}`,
 				{ method: "POST" }, // Though handler in go doesn't strictly check method yet, it's good practice
 			);
 			if (res.ok) {
@@ -189,6 +238,15 @@
 			alert("Please select a date");
 			return;
 		}
+		if (reportSource === "jira") {
+			if (!jira_enabled) {
+				alert("Jira is not enabled in config.ini ([jira] enabled=true).");
+				return;
+			}
+		} else if (!selectedProject) {
+			alert("Please select a git project");
+			return;
+		}
 		try {
 			const res = await fetch("/api/run", {
 				method: "POST",
@@ -197,6 +255,7 @@
 					date,
 					repo_path: selectedProject,
 					author: selectedUser,
+					source: reportSource === "jira" ? "jira" : "git",
 				}),
 			});
 			if (res.ok) {
@@ -392,6 +451,38 @@
 					/>
 				</div>
 				<div class="h-8 w-px bg-white/10"></div>
+				{#if jira_enabled}
+					<div class="flex flex-col gap-1">
+						<span
+							class="text-[10px] font-bold text-gray-500 uppercase tracking-widest"
+							>Source</span
+						>
+						<div
+							class="flex rounded-lg border border-white/10 overflow-hidden text-xs font-semibold"
+						>
+							<button
+								type="button"
+								onclick={() => (reportSource = "git")}
+								class="px-3 py-1.5 transition-colors {reportSource === 'git'
+									? 'bg-white/15 text-white'
+									: 'text-gray-400 hover:text-gray-200'}"
+							>
+								Git
+							</button>
+							<button
+								type="button"
+								onclick={() => (reportSource = "jira")}
+								class="px-3 py-1.5 border-l border-white/10 transition-colors {reportSource ===
+								'jira'
+									? 'bg-white/15 text-white'
+									: 'text-gray-400 hover:text-gray-200'}"
+							>
+								Jira
+							</button>
+						</div>
+					</div>
+					<div class="h-8 w-px bg-white/10"></div>
+				{/if}
 				<button
 					onclick={handleRun}
 					class="px-5 py-2 bg-orange-500 hover:bg-orange-600 text-black text-xs font-bold rounded-lg transition-all active:scale-95 shadow-lg shadow-orange-500/20"
@@ -507,6 +598,102 @@
 									</div>
 								</div>
 							{/each}
+						</div>
+					</section>
+
+					<section
+						class="bg-[#0d1117] border border-white/10 rounded-2xl overflow-hidden shadow-xl"
+					>
+						<div
+							class="px-6 py-4 border-b border-white/10 flex items-center justify-between"
+						>
+							<h3
+								class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+							>
+								Commit Runs
+							</h3>
+							<span
+								class="px-2 py-0.5 rounded-full bg-white/5 text-gray-400 text-[10px] font-bold"
+								>{commitRuns.length} Commits</span
+							>
+						</div>
+						<div class="p-6 space-y-3">
+							{#if commitRuns.length === 0}
+								<div class="text-xs text-gray-500">
+									No commits processed yet.
+								</div>
+							{:else}
+								{#each commitRuns as run}
+									<details
+										class="rounded-xl border border-white/10 bg-white/5 overflow-hidden"
+									>
+										<summary
+											class="cursor-pointer list-none px-4 py-3 flex items-center justify-between"
+										>
+											<div class="flex items-center gap-3">
+												<span
+													class="text-[10px] uppercase tracking-widest text-gray-500"
+													>{run.index + 1}/{run.total}</span
+												>
+												<span class="font-mono text-xs text-gray-200"
+													>{run.commit_hash}</span
+												>
+											</div>
+											<div class="flex items-center gap-2">
+												{#if run.attempts}
+													<span class="text-[10px] text-gray-500"
+														>Attempt {run.attempt}/{run.attempts}</span
+													>
+												{/if}
+												<span
+													class="px-2 py-0.5 rounded-full text-[10px] font-bold border {getCommitStatusClass(
+														run.status,
+													)}"
+													>{run.status || "pending"}</span
+												>
+											</div>
+										</summary>
+										<div class="border-t border-white/10 p-4 space-y-3">
+											{#if run.error}
+												<div class="text-xs text-red-300">
+													Error: {run.error}
+												</div>
+											{/if}
+											{#if run.events && run.events.length}
+												{#each run.events as event}
+													<div class="rounded-lg border border-white/10 bg-[#0b0f14] p-3">
+														<div class="flex items-center gap-2 mb-2">
+															<span
+																class="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-widest border {getRoleClass(
+																	event.role,
+																)}"
+																>{event.role}</span
+															>
+															<span class="text-[10px] text-gray-500">
+																{event.at}
+															</span>
+															{#if event.attempt}
+																<span class="text-[10px] text-gray-500">
+																	Attempt {event.attempt}
+																</span>
+															{/if}
+														</div>
+														<pre
+															class="whitespace-pre-wrap text-[11px] leading-relaxed text-gray-200 font-mono"
+														>
+{event.content}</pre
+														>
+													</div>
+												{/each}
+											{:else}
+												<div class="text-xs text-gray-500">
+													No events yet.
+												</div>
+											{/if}
+										</div>
+									</details>
+								{/each}
+							{/if}
 						</div>
 					</section>
 

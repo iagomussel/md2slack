@@ -55,7 +55,7 @@ func SetupServerHandlers(server *webui.Server, p *ReportProcessor) {
 
 	server.SetLoadClearHandlers(
 		func(repo string, date string) ([]gitdiff.TaskChange, string, error) {
-			repoName := gitdiff.GetRepoNameAt(repo)
+			repoName := storage.RepoKey(repo)
 			hist, err := storage.LoadHistory(repoName, date)
 			if err != nil {
 				return nil, "", err
@@ -70,7 +70,7 @@ func SetupServerHandlers(server *webui.Server, p *ReportProcessor) {
 			return tasks, hist.Message, nil
 		},
 		func(repo string, date string) error {
-			repoName := gitdiff.GetRepoNameAt(repo)
+			repoName := storage.RepoKey(repo)
 			return storage.DeleteHistoryDB(repoName, date)
 		},
 	)

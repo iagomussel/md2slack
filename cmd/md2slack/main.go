@@ -41,6 +41,7 @@ func main() {
 
 	// 3. Initialize Web Server (CLI wrapper)
 	webServer := startWebServer(cfg, stageNames)
+	webServer.SetJiraUIHints(cfg.Jira.Enabled, cfg.Jira.ProjectKey, config.JiraStorageKey(&cfg.Jira))
 
 	// 4. Initialize Core Processor
 	processor := &ReportProcessor{

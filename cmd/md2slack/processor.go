@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"md2slack/internal/config"
 	"md2slack/internal/gitdiff"
+	"md2slack/internal/jira"
 	"md2slack/internal/llm"
 	"md2slack/internal/renderer"
 	"md2slack/internal/slack"
@@ -42,6 +45,7 @@ type processCtx struct {
 	repoName       string
 	authorOverride string
 	extraContext   string
+	source         string // "git" or "jira"
 	ui             UI
 	llmOpts        llm.LLMOptions
 
@@ -63,36 +67,52 @@ func (p *ReportProcessor) Run() {
 
 	log.Println("ReportProcessor: waiting for requests...")
 	for req := range p.WebServer.RunChannel() {
-		p.ProcessDate(req.Date, req.RepoPath, req.Author, "")
+		p.ProcessDate(req.Date, req.RepoPath, req.Author, "", req.Source)
 	}
 }
 
-// ProcessDate executes the full report generation pipeline for a specific date
-func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverride string, extraContext string) {
+// ProcessDate executes the full report generation pipeline for a specific date.
+// source is "git" (default) or "jira" for Jira-backed reports (see config [jira]).
+func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverride string, extraContext string, source string) {
 	ctx := &processCtx{
 		date:           strings.TrimSpace(date),
 		repoPath:       repoPath,
 		authorOverride: authorOverride,
 		extraContext:   extraContext,
+		source:         strings.ToLower(strings.TrimSpace(source)),
 		llmOpts:        p.LLMOpts,
 	}
 
+	if ctx.source == "" {
+		ctx.source = "git"
+	}
+
 	if ctx.date == "" {
-		ctx.date = time.Now().Format("01-02-2006")
+		ctx.date = time.Now().Format("2006-01-02")
 	}
 
 	ctx.repoName = gitdiff.GetRepoNameAt(ctx.repoPath)
-	log.Printf("\n--- Date: %s (Repo: %s) autor %s ---\n", ctx.date, ctx.repoName, ctx.authorOverride)
+	if ctx.source == "jira" {
+		ctx.repoName = config.JiraStorageKey(&p.Config.Jira)
+		ctx.repoPath = ""
+	}
+	log.Printf("\n--- Date: %s (Repo: %s) source=%s autor %s ---\n", ctx.date, ctx.repoName, ctx.source, ctx.authorOverride)
 
 	if p.WebServer != nil {
 		p.WebServer.Reset(p.StageNames, ctx.date, ctx.repoName)
+		p.WebServer.SetRepoDisplay(ctx.repoName)
 		ctx.ui = p.WebServer
 		p.loadSessionFromHistory(ctx)
 	}
 
 	p.configureLLMOpts(ctx)
 
-	// Execute stages
+	if ctx.source == "jira" {
+		p.processJiraPipeline(ctx)
+		return
+	}
+
+	// Execute stages (git)
 	if !p.runStage(ctx, 0, "Preparing commit context", p.stagePrepareContext) {
 		return
 	}
@@ -115,6 +135,59 @@ func (p *ReportProcessor) ProcessDate(date string, repoPath string, authorOverri
 	p.finalizeReport(ctx)
 }
 
+func (p *ReportProcessor) processJiraPipeline(ctx *processCtx) {
+	if err := p.Config.Jira.Validate(); err != nil {
+		p.errf(ctx, "Jira is not configured: %v", err)
+		return
+	}
+
+	if !p.runStage(ctx, 0, "Fetching Jira issues", func(ctx *processCtx) error {
+		tasks, err := jira.DailyIssues(&p.Config.Jira, ctx.date)
+		if err != nil {
+			return err
+		}
+		ctx.allTasks = tasks
+		ctx.gitFacts = &gitdiff.Output{
+			RepoName: ctx.repoName,
+			Date:     ctx.date,
+			Commits:  nil,
+		}
+		ctx.allowedCommits = nil
+		ctx.commitChanges = nil
+		if p.WebServer != nil {
+			p.WebServer.SetTasks(ctx.allTasks, nil)
+		}
+		if err := storage.ReplaceTasks(ctx.repoName, ctx.date, ctx.allTasks); err != nil {
+			p.errf(ctx, "Warning: failed to persist tasks: %v", err)
+		}
+		return nil
+	}) {
+		return
+	}
+
+	if !p.runStage(ctx, 1, "Summarizing commits", func(*processCtx) error {
+		ctx.commitChanges = nil
+		return nil
+	}) {
+		return
+	}
+	if !p.runStage(ctx, 2, "Generating tasks", func(*processCtx) error {
+		return nil
+	}) {
+		return
+	}
+	if !p.runStage(ctx, 3, "Reviewing tasks", p.stageReviewTasks) {
+		return
+	}
+	if !p.runStage(ctx, 4, "Suggesting next actions", p.stageSuggestActions) {
+		return
+	}
+	if !p.runStage(ctx, 5, "Rendering report", p.stageRenderReport) {
+		return
+	}
+	p.finalizeReport(ctx)
+}
+
 func (p *ReportProcessor) runStage(ctx *processCtx, stage int, logMsg string, action func(*processCtx) error) bool {
 	log.Printf("<=-------- Run Stage (%d) %s --------=>\n\n...\n", stage, logMsg)
 	start := time.Now()
@@ -133,11 +206,17 @@ func (p *ReportProcessor) runStage(ctx *processCtx, stage int, logMsg string, ac
 		status := ""
 		switch stage {
 		case 0:
-			if ctx.gitFacts != nil {
+			if ctx.source == "jira" {
+				status = fmt.Sprintf("%d issues", len(ctx.allTasks))
+			} else if ctx.gitFacts != nil {
 				status = fmt.Sprintf("%d commits found", len(ctx.gitFacts.Commits))
 			}
 		case 1:
-			status = fmt.Sprintf("%d analyzed", len(ctx.commitChanges))
+			if ctx.source == "jira" {
+				status = "skipped (Jira)"
+			} else {
+				status = fmt.Sprintf("%d analyzed", len(ctx.commitChanges))
+			}
 		case 2:
 			status = fmt.Sprintf("%d tasks", len(ctx.allTasks))
 		case 3:
@@ -200,42 +279,28 @@ func (p *ReportProcessor) stagePrepareContext(ctx *processCtx) error {
 }
 
 func (p *ReportProcessor) stageSummarizeCommits(ctx *processCtx) error {
-	type commitResult struct {
-		index int
-		cc    *gitdiff.CommitChange
-		err   error
-	}
-
 	commits := ctx.gitFacts.Commits
-	results := make(chan commitResult, len(commits))
-	for i, commit := range commits {
-		go func(idx int, c gitdiff.Commit) {
-			log.Println("Analyzing commit %s...", c.Hash)
-			var semantic gitdiff.CommitSemantic
-			for _, s := range ctx.gitFacts.Semantic {
-				if s.CommitHash == c.Hash {
-					semantic = s
-					break
-				}
-			}
-
-			cc, err := llm.ExtractCommitIntent(gitdiff.SemanticChange{
-				CommitHash: c.Hash,
-				Signals:    semantic.Signals,
-			}, c.Message, ctx.llmOpts)
-			results <- commitResult{index: idx, cc: cc, err: err}
-		}(i, commit)
-	}
-
 	ctx.commitChanges = make([]gitdiff.CommitChange, len(commits))
-	for i := 0; i < len(commits); i++ {
-		res := <-results
-		if res.err != nil {
-			p.errf(ctx, "Error analyzing commit: %v", res.err)
+	for i, commit := range commits {
+		log.Printf("Analyzing commit %s...", commit.Hash)
+		var semantic gitdiff.CommitSemantic
+		for _, s := range ctx.gitFacts.Semantic {
+			if s.CommitHash == commit.Hash {
+				semantic = s
+				break
+			}
+		}
+
+		cc, err := llm.ExtractCommitIntent(gitdiff.SemanticChange{
+			CommitHash: commit.Hash,
+			Signals:    semantic.Signals,
+		}, commit.Message, ctx.llmOpts)
+		if err != nil {
+			p.errf(ctx, "Error analyzing commit %s: %v", commit.Hash, err)
 			continue
 		}
-		ctx.commitChanges[res.index] = *res.cc
-		log.Printf("Commit %s analyzed: %+v", res.cc.CommitHash, ctx.commitChanges[res.index])
+		ctx.commitChanges[i] = *cc
+		log.Printf("Commit %s analyzed: %+v", cc.CommitHash, ctx.commitChanges[i])
 	}
 	return nil
 }
@@ -249,24 +314,167 @@ func (p *ReportProcessor) stageGenerateTasks(ctx *processCtx) error {
 	manualTasks, _ := llm.IncorporateExtraContext(ctx.gitFacts.Extra, ctx.llmOpts)
 
 	for i, cc := range ctx.commitChanges {
-		log.Println("Incorporating commit %s...", cc.CommitHash)
+		log.Printf("Incorporating commit %s...\n", cc.CommitHash)
 		if cc.CommitHash == "" {
 			continue
 		}
 		p.logf(ctx, "  [%d/%d] Incorporating commit %s...", i+1, len(ctx.commitChanges), cc.CommitHash)
-		updated, err := llm.IncorporateCommit(cc, ctx.allTasks, manualTasks, ctx.gitFacts.Extra, ctx.llmOpts, ctx.allowedCommits)
-		if err != nil {
-			p.errf(ctx, "Error incorporating commit %s: %v", cc.CommitHash, err)
+		if err := p.processCommitLoop(ctx, cc, i, len(ctx.commitChanges), manualTasks); err != nil {
+			p.errf(ctx, "Commit %s failed after retries: %v", cc.CommitHash, err)
 			continue
-		}
-		ctx.allTasks = updated
-		if p.WebServer != nil {
-			p.WebServer.SetTasks(ctx.allTasks, nil)
 		}
 	}
 
 	ctx.allTasks = append(ctx.allTasks, manualTasks...)
 	return nil
+}
+
+const (
+	commitRetryAttempts = 3
+	commitRetryBackoff  = 300 * time.Millisecond
+	defaultLLMTimeout   = 2 * time.Minute
+)
+
+func (p *ReportProcessor) processCommitLoop(ctx *processCtx, commit gitdiff.CommitChange, idx int, total int, manualTasks []gitdiff.TaskChange) error {
+	timeout := ctx.llmOpts.Timeout
+	if timeout <= 0 {
+		timeout = defaultLLMTimeout
+	}
+
+	var lastErr error
+	if p.WebServer != nil {
+		p.WebServer.StartCommitRun(commit.CommitHash, idx, total)
+	}
+	for attempt := 1; attempt <= commitRetryAttempts; attempt++ {
+		if ctx.ui != nil {
+			ctx.ui.Status(fmt.Sprintf("Commit %d/%d — tentativa %d/%d", idx+1, total, attempt, commitRetryAttempts))
+		}
+		p.logf(ctx, "Commit %d/%d — tentativa %d/%d", idx+1, total, attempt, commitRetryAttempts)
+		if p.WebServer != nil {
+			p.WebServer.UpdateCommitAttempt(commit.CommitHash, attempt, commitRetryAttempts)
+			p.WebServer.AppendCommitEvent(commit.CommitHash, "status", fmt.Sprintf("Attempt %d/%d started", attempt, commitRetryAttempts), attempt)
+		}
+
+		callCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		opts := ctx.llmOpts
+		previousOnTasksUpdate := opts.OnTasksUpdate
+		previousOnToolStart := opts.OnToolStart
+		previousOnToolEnd := opts.OnToolEnd
+		previousOnLLMMessage := opts.OnLLMMessage
+		opts.OnTasksUpdate = func(tasks []gitdiff.TaskChange) {
+			ctx.allTasks = tasks
+			if previousOnTasksUpdate != nil {
+				previousOnTasksUpdate(tasks)
+			}
+			if p.WebServer != nil {
+				p.WebServer.SetTasks(tasks, nil)
+			}
+			if err := storage.ReplaceTasks(ctx.repoName, ctx.date, tasks); err != nil {
+				p.errf(ctx, "Warning: failed to persist tasks: %v", err)
+			}
+		}
+		opts.OnLLMMessage = func(role string, content string) {
+			if previousOnLLMMessage != nil {
+				previousOnLLMMessage(role, content)
+			}
+			if p.WebServer != nil {
+				p.WebServer.AppendCommitEvent(commit.CommitHash, role, content, attempt)
+			}
+		}
+		opts.OnToolStart = func(toolName string, paramsJSON string) {
+			if previousOnToolStart != nil {
+				previousOnToolStart(toolName, paramsJSON)
+			}
+			if p.WebServer != nil {
+				p.WebServer.AppendCommitEvent(commit.CommitHash, "tool_start", fmt.Sprintf("%s %s", toolName, paramsJSON), attempt)
+			}
+		}
+		opts.OnToolEnd = func(toolName string, resultJSON string) {
+			if previousOnToolEnd != nil {
+				previousOnToolEnd(toolName, resultJSON)
+			}
+			if p.WebServer != nil {
+				p.WebServer.AppendCommitEvent(commit.CommitHash, "tool_end", fmt.Sprintf("%s %s", toolName, resultJSON), attempt)
+			}
+		}
+
+		updated, err := llm.IncorporateCommitWithContext(callCtx, commit, ctx.allTasks, manualTasks, ctx.gitFacts.Extra, opts, ctx.allowedCommits)
+		cancel()
+		if err != nil {
+			lastErr = err
+			if isRetryableError(err) {
+				if errors.Is(err, llm.ErrNoToolCalls) {
+					p.errf(ctx, "Commit %d/%d — resposta sem tool calls na tentativa %d/%d", idx+1, total, attempt, commitRetryAttempts)
+					if p.WebServer != nil {
+						p.WebServer.AppendCommitEvent(commit.CommitHash, "error", "Response without tool calls", attempt)
+					}
+				} else {
+					p.errf(ctx, "Commit %d/%d — timeout na tentativa %d/%d", idx+1, total, attempt, commitRetryAttempts)
+					if p.WebServer != nil {
+						p.WebServer.AppendCommitEvent(commit.CommitHash, "error", "Timeout", attempt)
+					}
+				}
+				if attempt < commitRetryAttempts {
+					time.Sleep(commitRetryBackoff)
+					continue
+				}
+				if p.WebServer != nil {
+					p.WebServer.FinishCommitRun(commit.CommitHash, "error", "Failed after retries")
+				}
+				return fmt.Errorf("commit %s falhou após %d tentativas (sem tool calls ou timeout)", commit.CommitHash, commitRetryAttempts)
+			}
+			if p.WebServer != nil {
+				p.WebServer.FinishCommitRun(commit.CommitHash, "error", err.Error())
+			}
+			return fmt.Errorf("commit %s falhou: %w", commit.CommitHash, err)
+		}
+
+		ctx.allTasks = updated
+		if p.WebServer != nil {
+			p.WebServer.SetTasks(ctx.allTasks, nil)
+			p.WebServer.AppendCommitEvent(commit.CommitHash, "status", fmt.Sprintf("Attempt %d/%d succeeded", attempt, commitRetryAttempts), attempt)
+			p.WebServer.FinishCommitRun(commit.CommitHash, "success", "")
+		}
+		if err := storage.ReplaceTasks(ctx.repoName, ctx.date, ctx.allTasks); err != nil {
+			p.errf(ctx, "Warning: failed to persist tasks: %v", err)
+		}
+		p.logf(ctx, "Commit %d/%d — tasks atualizadas (%d)", idx+1, total, len(ctx.allTasks))
+		if ctx.ui != nil {
+			ctx.ui.Status(fmt.Sprintf("Commit %d/%d — tasks atualizadas (%d)", idx+1, total, len(ctx.allTasks)))
+		}
+		return nil
+	}
+
+	if lastErr != nil {
+		if p.WebServer != nil {
+			p.WebServer.FinishCommitRun(commit.CommitHash, "error", lastErr.Error())
+		}
+		return fmt.Errorf("commit %s falhou: %w", commit.CommitHash, lastErr)
+	}
+	return nil
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded")
+}
+
+func isRetryableError(err error) bool {
+	return isTimeoutError(err) || errors.Is(err, llm.ErrNoToolCalls) || isToolUseMismatchError(err)
+}
+
+func isToolUseMismatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tool_use_id") && strings.Contains(msg, "tool_result")
 }
 
 func (p *ReportProcessor) stageReviewTasks(ctx *processCtx) error {

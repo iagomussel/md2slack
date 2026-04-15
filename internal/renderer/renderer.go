@@ -72,6 +72,9 @@ func renderTask(t gitdiff.TaskChange) string {
 	case "onhold", "on_hold":
 		statusLabel = "On hold"
 		statusIcon = "⏸"
+	case "todo", "to_do", "new":
+		statusLabel = "To do"
+		statusIcon = "📋"
 	case "done", "":
 		statusLabel = "Done"
 		statusIcon = "✅"

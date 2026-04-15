@@ -50,9 +50,33 @@ type Stage struct {
 	Duration  string      `json:"duration,omitempty"`
 }
 
+type CommitEvent struct {
+	At      time.Time `json:"at"`
+	Role    string    `json:"role"`
+	Content string    `json:"content"`
+	Attempt int       `json:"attempt"`
+}
+
+type CommitRun struct {
+	CommitHash string        `json:"commit_hash"`
+	Index      int           `json:"index"`
+	Total      int           `json:"total"`
+	Status     string        `json:"status"`
+	Attempt    int           `json:"attempt"`
+	Attempts   int           `json:"attempts"`
+	StartedAt  time.Time     `json:"started_at,omitempty"`
+	FinishedAt time.Time     `json:"finished_at,omitempty"`
+	Error      string        `json:"error,omitempty"`
+	Events     []CommitEvent `json:"events"`
+}
+
 type State struct {
 	Repo        string               `json:"repo"`
 	Date        string               `json:"date"`
+	// JiraEnabled, JiraProject, and JiraStorageRepo are set at server startup from config.ini for the UI.
+	JiraEnabled     bool   `json:"jira_enabled"`
+	JiraProject     string `json:"jira_project,omitempty"`
+	JiraStorageRepo string `json:"jira_storage_repo,omitempty"`
 	Stages      []Stage              `json:"stages"`
 	Logs        []string             `json:"logs"`
 	Errors      []string             `json:"errors"`
@@ -61,12 +85,15 @@ type State struct {
 	ReportHTML  string               `json:"report_html"`
 	Tasks       []gitdiff.TaskChange `json:"tasks"`
 	NextActions []string             `json:"next_actions"`
+	CommitRuns  []CommitRun          `json:"commit_runs"`
 }
 
 type RunRequest struct {
 	Date     string `json:"date"`
 	RepoPath string `json:"repo_path"`
 	Author   string `json:"author"`
+	// Source is "git" (default) or "jira" for Jira-backed daily reports.
+	Source string `json:"source"`
 }
 
 type OpenAIMessage struct {
@@ -149,6 +176,23 @@ func (s *Server) Reset(stageNames []string, date string, repo string) {
 	s.state.Logs = nil
 	s.state.Errors = nil
 	s.state.StatusLine = ""
+	s.state.CommitRuns = nil
+}
+
+// SetRepoDisplay sets the logical repository key used for persistence (git folder name or jira-PROJ).
+func (s *Server) SetRepoDisplay(repo string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Repo = repo
+}
+
+// SetJiraUIHints exposes whether Jira mode is available and DB/repo keys for the UI.
+func (s *Server) SetJiraUIHints(enabled bool, projectKey, storageRepo string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.JiraEnabled = enabled
+	s.state.JiraProject = projectKey
+	s.state.JiraStorageRepo = storageRepo
 }
 
 func (s *Server) StageStart(idx int, name string) {
@@ -197,6 +241,69 @@ func (s *Server) Status(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state.StatusLine = line
+}
+
+func (s *Server) StartCommitRun(commitHash string, index int, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run := s.findCommitRun(commitHash)
+	if run == nil {
+		s.state.CommitRuns = append(s.state.CommitRuns, CommitRun{
+			CommitHash: commitHash,
+			Index:      index,
+			Total:      total,
+			Status:     "running",
+			StartedAt:  time.Now(),
+		})
+		return
+	}
+	run.Status = "running"
+	run.Index = index
+	run.Total = total
+	if run.StartedAt.IsZero() {
+		run.StartedAt = time.Now()
+	}
+}
+
+func (s *Server) UpdateCommitAttempt(commitHash string, attempt int, attempts int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run := s.findCommitRun(commitHash)
+	if run == nil {
+		return
+	}
+	run.Attempt = attempt
+	run.Attempts = attempts
+}
+
+func (s *Server) AppendCommitEvent(commitHash string, role string, content string, attempt int) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run := s.findCommitRun(commitHash)
+	if run == nil {
+		return
+	}
+	run.Events = appendCommitEvent(run.Events, CommitEvent{
+		At:      time.Now(),
+		Role:    role,
+		Content: content,
+		Attempt: attempt,
+	}, 300)
+}
+
+func (s *Server) FinishCommitRun(commitHash string, status string, errMsg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run := s.findCommitRun(commitHash)
+	if run == nil {
+		return
+	}
+	run.Status = status
+	run.Error = errMsg
+	run.FinishedAt = time.Now()
 }
 
 func (s *Server) Stop() {
@@ -438,6 +545,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	payload.Date = strings.TrimSpace(payload.Date)
 	payload.RepoPath = strings.TrimSpace(payload.RepoPath)
 	payload.Author = strings.TrimSpace(payload.Author)
+	payload.Source = strings.TrimSpace(payload.Source)
 	if payload.Date == "" {
 		http.Error(w, "date is required", http.StatusBadRequest)
 		return
@@ -588,7 +696,7 @@ func (s *Server) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoName := gitdiff.GetRepoNameAt(repo)
+	repoName := storage.RepoKey(repo)
 	tasks, err := storage.LoadTasks(repoName, date)
 	if err != nil {
 		log.Printf("[handleLoadHistory] Error loading history for repo=%s, date=%s: %v", repo, date, err)
@@ -642,7 +750,7 @@ func (s *Server) handleClearTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoName := gitdiff.GetRepoNameAt(repo)
+	repoName := storage.RepoKey(repo)
 	if err := storage.DeleteAllTasks(repoName, date); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -709,6 +817,23 @@ func appendLog(list []string, line string, max int) []string {
 		list = list[len(list)-max:]
 	}
 	return list
+}
+
+func appendCommitEvent(list []CommitEvent, event CommitEvent, max int) []CommitEvent {
+	list = append(list, event)
+	if len(list) > max {
+		list = list[len(list)-max:]
+	}
+	return list
+}
+
+func (s *Server) findCommitRun(commitHash string) *CommitRun {
+	for i := range s.state.CommitRuns {
+		if s.state.CommitRuns[i].CommitHash == commitHash {
+			return &s.state.CommitRuns[i]
+		}
+	}
+	return nil
 }
 
 func renderMarkdown(md string) string {

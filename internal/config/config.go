@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,10 +32,52 @@ type ServerConfig struct {
 	AutoIncrementPort bool
 }
 
+// JiraConfig holds Atlassian Jira Cloud credentials and query defaults.
+// Authenticate with email + API token (https://id.atlassian.com/manage-profile/security/api-tokens).
+type JiraConfig struct {
+	Enabled        bool
+	BaseURL        string
+	Email          string
+	APIToken       string
+	ProjectKey     string
+	JQL            string
+	AssigneeIsMe   bool
+}
+
+// Validate returns an error if Jira integration is enabled but misconfigured.
+func (j *JiraConfig) Validate() error {
+	if j == nil || !j.Enabled {
+		return fmt.Errorf("jira is not enabled")
+	}
+	if strings.TrimSpace(j.BaseURL) == "" {
+		return fmt.Errorf("jira base_url is required")
+	}
+	if strings.TrimSpace(j.Email) == "" || strings.TrimSpace(j.APIToken) == "" {
+		return fmt.Errorf("jira email and api_token are required")
+	}
+	if strings.TrimSpace(j.JQL) == "" && strings.TrimSpace(j.ProjectKey) == "" {
+		return fmt.Errorf("jira project_key or jql is required when jql is empty")
+	}
+	return nil
+}
+
+// JiraStorageKey is the SQLite repo_name namespace for Jira-backed runs.
+func JiraStorageKey(j *JiraConfig) string {
+	if j == nil {
+		return "jira"
+	}
+	p := strings.TrimSpace(j.ProjectKey)
+	if p != "" {
+		return "jira-" + strings.ToUpper(p)
+	}
+	return "jira-custom"
+}
+
 type Config struct {
 	Slack  SlackConfig
 	LLM    LLMConfig
 	Server ServerConfig
+	Jira   JiraConfig
 }
 
 func Load() (*Config, error) {
@@ -57,6 +100,7 @@ func Load() (*Config, error) {
 	slackSec := getSection(cfg, "slack", "Slack")
 	llmSec := getSection(cfg, "llm", "LLM")
 	serverSec := getSection(cfg, "server", "Server")
+	jiraSec := getSection(cfg, "jira", "Jira")
 
 	return &Config{
 		Slack: SlackConfig{
@@ -78,6 +122,15 @@ func Load() (*Config, error) {
 			Host:              strings.Trim(getKey(serverSec, "host", "Host").MustString("127.0.0.1"), "\""),
 			Port:              getKey(serverSec, "port", "Port").MustInt(8080),
 			AutoIncrementPort: getKey(serverSec, "auto_increment_port", "AutoIncrementPort").MustBool(true),
+		},
+		Jira: JiraConfig{
+			Enabled:      getKey(jiraSec, "enabled", "Enabled").MustBool(false),
+			BaseURL:      strings.Trim(getKey(jiraSec, "base_url", "BaseURL", "Base_Url").String(), "\""),
+			Email:        strings.Trim(getKey(jiraSec, "email", "Email").String(), "\""),
+			APIToken:     strings.Trim(getKey(jiraSec, "api_token", "ApiToken", "API_Token").String(), "\""),
+			ProjectKey:   strings.Trim(getKey(jiraSec, "project_key", "ProjectKey", "Project_Key").String(), "\""),
+			JQL:          strings.Trim(getKey(jiraSec, "jql", "JQL").String(), "\""),
+			AssigneeIsMe: getKey(jiraSec, "assignee_is_me", "AssigneeIsMe").MustBool(false),
 		},
 	}, nil
 }

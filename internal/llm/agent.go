@@ -29,10 +29,14 @@ func NewAgent(opts LLMOptions, taskTools *tools.TaskTools) *Agent {
 // StreamChat runs a chat session with streaming and tools.
 // Returns the response text and whether any tools were executed.
 func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string, bool, error) {
+	return a.StreamChatWithContext(context.Background(), history, systemPrompt)
+}
+
+// StreamChatWithContext runs a chat session with a caller-provided context.
+// Returns the response text and whether any tools were executed.
+func (a *Agent) StreamChatWithContext(ctx context.Context, history []OpenAIMessage, systemPrompt string) (string, bool, error) {
 	// Prepare messages
 	messages := convertToLLMCMessages(history, systemPrompt)
-
-	ctx := context.Background()
 	toolUsed := false
 
 	var streamBuf strings.Builder
@@ -87,20 +91,32 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 
 		// Tool Call identification (Native or Text-parsed)
 		tCalls := choice.ToolCalls
+		parsedToolCalls := false
 		if len(tCalls) == 0 && responseText != "" && a.Tools != nil {
 			// Fallback: parse from text if native tools failed but we have text
 			parsed := parseToolCallsFromText(responseText)
 			if len(parsed) > 0 {
+				parsedToolCalls = true
 				log.Printf("agent.go:94 [llm.StreamChat] detected %d tool calls in text fallback", len(parsed))
 				// Convert to internal format for execution
-				for _, p := range parsed {
+				for i, p := range parsed {
 					tCalls = append(tCalls, llms.ToolCall{
+						ID:   fmt.Sprintf("tool_%d", i+1),
+						Type: "function",
 						FunctionCall: &llms.FunctionCall{
 							Name:      p.Tool,
 							Arguments: func() string { b, _ := json.Marshal(p.Parameters); return string(b) }(),
 						},
 					})
 				}
+			}
+		}
+		for i := range tCalls {
+			if strings.TrimSpace(tCalls[i].ID) == "" {
+				tCalls[i].ID = fmt.Sprintf("tool_%d", i+1)
+			}
+			if strings.TrimSpace(tCalls[i].Type) == "" {
+				tCalls[i].Type = "function"
 			}
 		}
 
@@ -124,6 +140,12 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 						Arguments: tc.FunctionCall.Arguments,
 					},
 				})
+			}
+			log.Printf("agent.go: tool_use parts appended: count=%d parsed=%v", len(parts), parsedToolCalls)
+			for _, p := range parts {
+				if call, ok := p.(llms.ToolCall); ok {
+					log.Printf("agent.go: tool_use id=%s type=%s name=%s", call.ID, call.Type, call.FunctionCall.Name)
+				}
 			}
 			currentMessages = append(currentMessages, llms.MessageContent{
 				Role:  llms.ChatMessageTypeAI,
@@ -163,16 +185,27 @@ func (a *Agent) StreamChat(history []OpenAIMessage, systemPrompt string) (string
 				}
 
 				// Add tool response to history (proper tool message)
-				currentMessages = append(currentMessages, llms.MessageContent{
-					Role: llms.ChatMessageTypeTool,
-					Parts: []llms.ContentPart{
-						llms.ToolCallResponse{
-							ToolCallID: tc.ID,
-							Name:       tc.FunctionCall.Name,
-							Content:    result,
+				// Skip tool_result for parsed tool calls to avoid Anthropic validation errors
+				if !parsedToolCalls {
+					log.Printf("agent.go: tool_result for id=%s name=%s", tc.ID, tc.FunctionCall.Name)
+					currentMessages = append(currentMessages, llms.MessageContent{
+						Role: llms.ChatMessageTypeTool,
+						Parts: []llms.ContentPart{
+							llms.ToolCallResponse{
+								ToolCallID: tc.ID,
+								Name:       tc.FunctionCall.Name,
+								Content:    result,
+							},
 						},
-					},
-				})
+					})
+				} else {
+					log.Printf("agent.go: tool_result skipped for parsed tool calls (id=%s name=%s)", tc.ID, tc.FunctionCall.Name)
+				}
+			}
+
+			// For parsed tool calls, do not send tool_result back; treat as final
+			if parsedToolCalls {
+				return responseText, toolUsed, nil
 			}
 
 			// Continue loop to let LLM respond to tool results
